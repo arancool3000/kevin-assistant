@@ -27,6 +27,8 @@ import webbrowser
 
 import flasher
 
+IS_MAC = sys.platform == 'darwin'
+
 REPO = 'arancool3000/kevin-assistant'
 try:
     from _version import TAG            # written by the release workflow: the app installs its own release
@@ -247,6 +249,9 @@ def is_boot_partition(root):
 
 def boot_drives(show_all=False):
     """Removable drives that look like a Raspberry Pi OS boot partition, as (root, label)."""
+    if IS_MAC:
+        import flasher_mac
+        return flasher_mac.boot_drives()
     if os.name != 'nt':
         return []
     import ctypes
@@ -395,11 +400,17 @@ def parse_netsh_key(text):
 
 
 def this_pc_wifi():
+    if IS_MAC:
+        import flasher_mac
+        return flasher_mac.this_mac_wifi()
     return parse_netsh_ssid(_run_quiet(['netsh', 'wlan', 'show', 'interfaces'])) if os.name == 'nt' else ''
 
 
 def saved_wifi_password(ssid):
     """Windows keeps the password of every network it has joined; reading it back is the user's own choice (a button)."""
+    if IS_MAC:
+        import flasher_mac
+        return flasher_mac.saved_wifi_password(ssid)
     if os.name != 'nt' or not ssid:
         return ''
     return parse_netsh_key(_run_quiet(['netsh', 'wlan', 'show', 'profile', 'name=' + ssid, 'key=clear']))
@@ -531,7 +542,7 @@ def gui():
     root.geometry('980x700')
     root.minsize(900, 640)
     root.configure(bg=BG)
-    FONT = 'Segoe UI' if os.name == 'nt' else 'Helvetica'
+    FONT = 'Segoe UI' if os.name == 'nt' else 'Helvetica Neue' if IS_MAC else 'DejaVu Sans'
     st = ttk.Style()
     try:
         st.theme_use('clam')
@@ -631,7 +642,7 @@ def gui():
         lab = tk.Label(side, text='   %d   %s' % (i + 1, name), bg=SIDE, fg='#8f8eb0', font=(FONT, 11), anchor='w', pady=8)
         lab.pack(fill='x', padx=10)
         step_labels.append(lab)
-    tk.Label(side, text='Nothing leaves this PC except to\nGoogle (to check your key), the\nRaspberry Pi website (the OS image)\nand your own Pi.',
+    tk.Label(side, text='Nothing leaves this computer except to\nGoogle (to check your key), the\nRaspberry Pi website (the OS image)\nand your own Pi.',
              bg=SIDE, fg='#56557a', font=(FONT, 8), justify='left', anchor='w').pack(side='bottom', fill='x', padx=22, pady=20)
 
     pages = {}
@@ -682,7 +693,7 @@ def gui():
                           'minutes here, then 10-20 minutes on the Pi by itself.')
     ttk.Label(p, text='You need', font=(FONT, 11, 'bold')).pack(anchor='w', pady=(4, 2))
     for item in ('A Raspberry Pi 4 or 5 (3 B+ works, slowly) and its power supply',
-                 'A microSD card, 8 GB or more, and a way to plug it into this PC',
+                 'A microSD card, 8 GB or more, and a way to plug it into this computer',
                  'A USB speakerphone (or a USB microphone and speaker)',
                  'A free Gemini API key from Google (the next steps show you where)'):
         ttk.Label(p, text='•  ' + item).pack(anchor='w', pady=1)
@@ -697,7 +708,7 @@ def gui():
     p = page('Wi-Fi')
     h1(p, 'Wi-Fi', 'The Pi joins this network when it first starts. (Not needed if your Pi is already running.)')
     var('wifi_ssid', this_pc_wifi())
-    _r, _w = field(p, 'Wi-Fi name', 'wifi_ssid', hint='Exactly as your phone shows it: capitals matter. Filled in from this PC.')
+    _r, _w = field(p, 'Wi-Fi name', 'wifi_ssid', hint='Exactly as your phone shows it: capitals matter. Filled in from this computer.')
     _r, _w = field(p, 'Wi-Fi password', 'wifi_password', show='•')
     wifi_say = note(p)
 
@@ -705,12 +716,12 @@ def gui():
         pw = saved_wifi_password(v['wifi_ssid'].get().strip())
         if pw:
             v['wifi_password'].set(pw)
-            wifi_say(True, 'Filled in from this PC.')
+            wifi_say(True, 'Filled in from this computer.')
         else:
-            wifi_say(False, 'This PC has no saved password for that network: type it in.')
-    ttk.Button(_r, text='Use this PC\'s saved password', command=fill_wifi_password).pack(side='left', padx=4)
+            wifi_say(False, 'No saved password for that network here: type it in.')
+    ttk.Button(_r, text='Use the saved password', command=fill_wifi_password).pack(side='left', padx=4)
     field(p, 'Country', 'country', this_pc_country(), values=COUNTRIES, width=8,
-          hint='Wi-Fi rules differ by country. Taken from Windows.')
+          hint='Wi-Fi rules differ by country. Taken from this computer\'s region.')
 
     # 3. Kevin
     p = page('Kevin')
@@ -944,7 +955,8 @@ def gui():
         if m == 'card':
             disks.clear()
             try:
-                for dsk in flasher.choose_disks(flasher.list_disks()):
+                found = __import__('flasher_mac').list_disks() if IS_MAC else flasher.list_disks()
+                for dsk in flasher.choose_disks(found):
                     disks[flasher.describe(dsk)] = dsk
             except Exception as e:
                 out('Could not list the cards: %s' % e)
@@ -1068,7 +1080,7 @@ def gui():
             if not disk:
                 messagebox.showerror('Kevin Setup', 'Choose the microSD card (press Refresh after putting it in).')
                 return
-            if not flasher.is_admin():
+            if not IS_MAC and not flasher.is_admin():
                 messagebox.showerror('Kevin Setup', 'Writing a card needs administrator rights: close Kevin Setup, right-click it '
                                                   'and choose "Run as administrator". Your answers are remembered.')
                 return
@@ -1085,25 +1097,31 @@ def gui():
                     out('Using %s (released %s).' % (img['url'].rsplit('/', 1)[-1], img.get('release_date') or '?'))
                     if int(disk['Size']) < int(img['extract_size']):
                         raise IOError('the card is too small for the image')
-                    flasher.clear_disk(disk)
-                    target = flasher.DiskTarget(disk['Number'])
-
                     def progress(kind, done, total):
                         stage(1 if kind == 'write' else 2)
                         work['progress'] = (kind, done, total)
-                    try:
-                        flasher.write_image(flasher.http_opener(img['url']), target, int(img['extract_size']),
-                                            img['extract_sha256'], progress, stop.is_set)
-                    finally:
-                        target.close()
-                    work['progress'] = None
-                    stage(3)
-                    boot = flasher.boot_drive_of(disk['Number'])
+                    if IS_MAC:                      # macOS asks for the password; a helper does the writing
+                        import flasher_mac
+                        flasher_mac.write(disk, img, progress, stop.is_set)
+                        work['progress'] = None
+                        stage(3)
+                        boot = flasher_mac.boot_volume(int(disk['Number']))
+                    else:
+                        flasher.clear_disk(disk)
+                        target = flasher.DiskTarget(disk['Number'])
+                        try:
+                            flasher.write_image(flasher.http_opener(img['url']), target, int(img['extract_size']),
+                                                img['extract_sha256'], progress, stop.is_set)
+                        finally:
+                            target.close()
+                        work['progress'] = None
+                        stage(3)
+                        boot = flasher.boot_drive_of(disk['Number'])
                     for line in prepare_card(boot, d):
                         out(line)
                     stage(4)
-                    ejected = flasher.eject(boot)
-                    out('Ejected.' if ejected else 'Use "Eject" on the bootfs drive in File Explorer before taking the card out.')
+                    ejected = __import__('flasher_mac').eject(int(disk['Number'])) if IS_MAC else flasher.eject(boot)
+                    out('Ejected.' if ejected else 'Eject the bootfs drive (File Explorer, or Finder on a Mac) before taking the card out.')
                     root.after(0, lambda: finished(d, d['hostname'] + '.local'))
                 except flasher.Cancelled:
                     out('Stopped. The card is blank now: write it again before using it.')
@@ -1200,6 +1218,10 @@ DEMO = {'hostname': 'kevin', 'username': 'pi', 'password': 'pa"ss word1', 'wifi_
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 8 and sys.argv[1] == '--mac-write':     # the Mac's root helper (see flasher_mac.write)
+        import flasher_mac
+        n, url, size, sha, status_path, stop_path = sys.argv[2:]
+        sys.exit(flasher_mac.helper(int(n), url, int(size), sha, status_path, stop_path))
     if '--print' in sys.argv:                 # show what would be written
         for n, t in cloud_init_files(DEMO).items():
             print('==== %s\n%s' % (n, t))

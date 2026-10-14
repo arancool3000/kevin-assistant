@@ -31,7 +31,8 @@ on it's one of his abilities. Any one skill can be switched off or rolled back o
 - **Has a settings page** — `http://kevin.local:8080`, from any phone or computer at home.
 - **Can ask your Claude or ChatGPT** — optional: connect your own subscription for the hard questions
   ([docs/AI-ACCOUNTS.md](docs/AI-ACCOUNTS.md)).
-- **Has a Windows setup app** — Wi-Fi, password and key, without typing a single command.
+- **Has setup apps for Windows and Mac** — Wi-Fi, passwords and key, without typing a single command
+  ([Windows](docs/WINDOWS-SETUP.md), [Mac](docs/MAC-SETUP.md)).
 
 ---
 

@@ -46,3 +46,36 @@ jobs:
             dist/Kevin-Setup.exe.sha256
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
+  mac-app:
+    needs: windows-app
+    strategy:
+      matrix:
+        include:
+          - {os: macos-14, arch: apple-silicon}
+          - {os: macos-13, arch: intel}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r setup-windows/requirements.txt pyinstaller==6.11.1
+      - name: build installs this release's install.sh
+        run: echo "TAG = '${GITHUB_REF_NAME}'" > setup-windows/_version.py
+      - run: pyinstaller --windowed --name "Kevin Setup" --osx-bundle-identifier io.github.arancool3000.kevin-setup --paths setup-windows setup-windows/bob_setup.py
+      - name: self-test the built app
+        run: |
+          "dist/Kevin Setup.app/Contents/MacOS/Kevin Setup" --selftest || true
+          cat "dist/Kevin Setup.app/Contents/MacOS/selftest.txt"
+          grep -q '^ok' "dist/Kevin Setup.app/Contents/MacOS/selftest.txt"
+          rm "dist/Kevin Setup.app/Contents/MacOS/selftest.txt"
+      - name: zip
+        run: |
+          cd dist && ditto -c -k --keepParent "Kevin Setup.app" "Kevin-Setup-mac-${{ matrix.arch }}.zip"
+          shasum -a 256 "Kevin-Setup-mac-${{ matrix.arch }}.zip" > "Kevin-Setup-mac-${{ matrix.arch }}.zip.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Kevin-Setup-mac-${{ matrix.arch }}.zip
+            dist/Kevin-Setup-mac-${{ matrix.arch }}.zip.sha256
+          prerelease: ${{ contains(github.ref_name, '-') }}
