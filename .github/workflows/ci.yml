@@ -39,7 +39,7 @@ jobs:
       matrix:
         include:
           - {os: macos-14, arch: apple-silicon}
-          - {os: macos-13, arch: intel}
+          - {os: macos-15-intel, arch: intel}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
