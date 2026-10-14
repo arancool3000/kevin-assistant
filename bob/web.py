@@ -13,7 +13,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import audio, config, helper, skills, tools, updater, wake
+from . import actions, audio, bedside, config, experts, helper, skills, tools, updater, wake
+from .webapp import APP, STANDBY
 
 SESSIONS = {}
 SESSION_HOURS = 24 * 30
@@ -241,6 +242,12 @@ class Handler(BaseHTTPRequestHandler):
                 '<div class="card"><h2>Earlier versions</h2><p class="sub">Each shows what changed since it. The last %d are kept.</p>%s</div>') % (
                 esc(name), state, _access_html(skills.access_report(src)) if src else '<p class="sub">not installed</p>',
                 esc(src or 'not found'), skills.KEEP_VERSIONS, vhtml)))
+        if path == '/api/live':
+            return self._send(200, json.dumps(actions.live()), 'application/json')
+        if path == '/app':
+            return self._send(200, APP)
+        if path == '/standby':
+            return self._send(200, STANDBY)
         if path == '/log':
             try:
                 with open(updater.LOG) as f:
@@ -303,6 +310,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, self.login('Wrong password.'))
         if not self._signed_in():
             return self._redirect('/login')
+        if path == '/api/act':                       # the phone page and StandBy buttons
+            what, arg = f.get('what', ''), f.get('arg', '')
+            if what == 'talk':
+                r = actions.talk()
+            elif what == 'timer':
+                r = actions.timer(arg, f.get('which', ''))
+            elif what == 'music':
+                r = actions.music_action(arg)
+            elif what == 'quick_timer':
+                from . import timers as _timers
+                t = _timers.add_timer(_num(arg, 1, 600, 5) * 60, f.get('name') or None)
+                r = {'ok': True, 'name': t['name']}
+            else:
+                r = {'ok': False, 'error': 'unknown action'}
+            return self._send(200, json.dumps(r), 'application/json')
         if path == '/settings':
             cfg = config.load()
             for k in ('name', 'personality', 'language'):
@@ -323,6 +345,12 @@ class Handler(BaseHTTPRequestHandler):
             cfg['volume'] = _num(f.get('volume'), 0, 100, cfg['volume'])
             cfg['idle_seconds'] = _num(f.get('idle_seconds'), 5, 60, cfg['idle_seconds'])
             cfg['auto_update'] = f.get('auto_update') == 'on'
+            if 'bedside_serial' in f:
+                cfg['bedside_serial'] = ''.join(c for c in f['bedside_serial'] if c.isalnum() or c in '_-')[:40]
+            for k, lo, hi in (('quiet_from', 0, 23), ('quiet_to', 0, 23), ('music_volume', 0, 100)):
+                if f.get(k, '') != '':
+                    cfg[k] = _num(f.get(k), lo, hi, cfg[k])
+            cfg['quiet_enabled'] = f.get('quiet_enabled') == 'on'
             cfg['skill_approval'] = 'page' if f.get('skill_approval') == 'page' else 'voice'
             if f.get('town', '').strip() != cfg.get('town'):
                 cfg['town'] = f.get('town', '').strip()[:100]
@@ -339,6 +367,22 @@ class Handler(BaseHTTPRequestHandler):
                 config.save_secrets(sec)
             subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'restart', 'bob-assistant'], capture_output=True)
             return self._redirect('/?saved=1')
+        if path == '/ai-connect':                      # your own Claude / ChatGPT account (docs/AI-ACCOUNTS.md)
+            try:
+                if f.get('claude_token', '').strip():
+                    tok = f['claude_token'].strip()
+                    if not tok.startswith('sk-ant-') or len(tok) < 40:
+                        raise ValueError('that does not look like a token from "claude setup-token" (it starts sk-ant-)')
+                    sec['claude_token'] = tok
+                    config.save_secrets(sec)
+                if f.get('chatgpt_auth', '').strip():
+                    experts.save_chatgpt_signin(f['chatgpt_auth'])
+            except ValueError as e:
+                return self._send(200, page('Kevin', '<p class="warn">%s</p><p><a class="btn" href="/">Back</a></p>' % esc(e)))
+            return self._redirect('/')
+        if path == '/ai-forget':
+            experts.forget(f.get('which', ''))
+            return self._redirect('/')
         if path == '/helper':                          # "Help run KindleHub": off by default, on only when asked
             verb = 'enable' if f.get('on') == '1' else 'disable'
             subprocess.run(['sudo', '-n', '/usr/bin/systemctl', verb, '--now', 'bob-assistant-helper.service'],
@@ -424,6 +468,7 @@ class Handler(BaseHTTPRequestHandler):
             skills_html += ''.join('<p class="warn">%s is broken: %s</p>' % (esc(b['name']), esc(b['problem'])) for b in bad)
         return page('Kevin', (
             '<h1><span class="face"><i></i><i></i></span>%s</h1><p class="sub">%s · version %s</p>'
+            '<p><a class="btn" href="/app">Remote</a> <a class="btn plain" href="/standby">StandBy clock</a></p>'
             '%s'
             '<div class="card"><h2>Status</h2>'
             '<div class="row"><span>Kevin</span><span class="pill %s">%s</span></div>'
@@ -441,11 +486,17 @@ class Handler(BaseHTTPRequestHandler):
             '<label>Language (e.g. en-GB, en-US)</label><input name="language" value="%s">'
             '<label>Microphone device (from arecord -L; "default" is the USB device the installer chose)</label><input name="mic_device" value="%s">'
             '<label>Speaker device (from aplay -L)</label><input name="speaker_device" value="%s">'
+            '<label><input type="checkbox" name="quiet_enabled" style="width:auto" %s> Quiet hours (softer chimes, dim bedside screen; alarms still ring)</label>'
+            '<label>Quiet from (hour, 0-23)</label><input type="number" name="quiet_from" min="0" max="23" value="%s">'
+            '<label>Quiet until (hour, 0-23)</label><input type="number" name="quiet_to" min="0" max="23" value="%s">'
+            '<label>Music volume</label><input type="range" name="music_volume" min="0" max="100" value="%s">'
+            '<label>Bedside screen: USB serial number (see examples/bedside-screen; empty = none). Plugged in now: %s</label><input name="bedside_serial" value="%s">'
             '<label>New Gemini API key (leave empty to keep the current one)</label><input name="api_key" autocomplete="off">'
             '<label><input type="checkbox" name="auto_update" style="width:auto" %s> Install updates automatically</label>'
             '<label>Approving new skills</label><select name="skill_approval"><option value="voice"%s>A spoken yes, or Approve on this page</option>'
             '<option value="page"%s>Only Approve on this page (after reading the code)</option></select>'
             '<p><button>Save</button></p></form>'
+            '%s'
             '<div class="card"><h2>Skills Kevin has made</h2>%s</div>'
             '%s'
             '<div class="card"><h2>Updates</h2><form method="post" action="/update" style="display:inline"><button class="plain">Check now</button></form> '
@@ -459,9 +510,33 @@ class Handler(BaseHTTPRequestHandler):
                 esc(pi_st.get('cpu_temp_c', '?')), esc(pi_st.get('disk_free_gb', '?')), esc(service_active('bob-assistant')),
                 esc(cfg['name']), esc(cfg['wake_phrase']), esc(cfg['wake_sensitivity']), esc(cfg['wake_sensitivity']), voice_opts,
                 esc(cfg['personality']), esc(cfg['town']), esc(cfg['volume']), esc(cfg['idle_seconds']), esc(cfg['language']),
-                esc(cfg['mic_device']), esc(cfg['speaker_device']), 'checked' if cfg.get('auto_update') else '',
+                esc(cfg['mic_device']), esc(cfg['speaker_device']),
+                'checked' if cfg.get('quiet_enabled', True) else '', esc(cfg.get('quiet_from', 22)), esc(cfg.get('quiet_to', 7)),
+                esc(cfg.get('music_volume', 60)), esc(', '.join(bedside.devices()) or 'no USB serial devices'), esc(cfg.get('bedside_serial', '')),
+                'checked' if cfg.get('auto_update') else '',
                 '' if cfg.get('skill_approval') == 'page' else ' selected', ' selected' if cfg.get('skill_approval') == 'page' else '',
-                skills_html, helper_card()))
+                ai_card(), skills_html, helper_card()))
+
+
+def ai_card():
+    """Connect your own Claude / ChatGPT account (optional)."""
+    st = experts.status()
+
+    def row(key, label, how):
+        s = st[key]
+        state = ('<span class="pill ok">connected</span> <form method="post" action="/ai-forget" style="display:inline">'
+                 '<input type="hidden" name="which" value="%s"><button class="plain">Disconnect</button></form>' % key) if s['connected'] else \
+            '<span class="pill %s">%s</span>' % ('warn', 'not installed' if not s['installed'] else 'not connected')
+        return '<div class="row"><span><b>%s</b><br><span class="sub">%s</span></span><span>%s</span></div>' % (label, how, state)
+    return ('<div class="card"><h2>Your Claude or ChatGPT account (optional)</h2>'
+            '<p class="sub">For hard questions Kevin can ask your own Claude or ChatGPT subscription. They only answer: no files, no '
+            'commands. Step by step: docs/AI-ACCOUNTS.md on GitHub.</p>%s%s'
+            '<form method="post" action="/ai-connect"><label>Claude: paste the token from <code>claude setup-token</code></label>'
+            '<input name="claude_token" autocomplete="off" placeholder="sk-ant-...">'
+            '<label>ChatGPT: paste the contents of <code>~/.codex/auth.json</code> after <code>codex login</code></label>'
+            '<textarea name="chatgpt_auth" rows="3" autocomplete="off" placeholder="{...}" style="width:100%%;border-radius:12px;background:rgba(0,0,0,.25);color:inherit;border:1px solid var(--line);padding:10px"></textarea><p><button class="plain">Connect</button></p></form></div>') % (
+        row('claude', 'Claude', 'Claude Code, with your Claude Pro or Max plan'),
+        row('chatgpt', 'ChatGPT', 'Codex, with your ChatGPT Plus or Pro plan'))
 
 
 def main():

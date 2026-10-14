@@ -9,10 +9,21 @@ import signal
 import sys
 import time
 
-from . import audio, config, live, tools, wake
+from . import audio, bedside, config, live, music, timers, tools, wake
 
 VOSK_MODEL = os.environ.get('BOB_VOSK_MODEL', os.path.join(config.STATE, 'vosk-model'))
 STATE_FILE = os.path.join(config.STATE, 'state.json')
+WAKE_NOW = os.path.join(config.STATE, 'wake_now')     # made by the web page / bedside screen: talk now, no wake phrase
+STOP_NOW = os.path.join(config.STATE, 'stop_now')     # ...or: end this conversation now (live.py checks it)
+
+
+def take(flag):
+    """True once if the flag file exists (and removes it)."""
+    try:
+        os.unlink(flag)
+        return True
+    except OSError:
+        return False
 
 
 def log(msg):
@@ -52,13 +63,19 @@ def main():
     speaker = audio.Speaker(audio.safe_device(cfg.get('speaker_device')))
     chime = audio.tone()
 
-    def ring(name):
-        log('timer done: %s' % name)
-        for _ in range(3):
-            speaker.play(audio.tone((1046, 1318, 1568), 150, 0.3))
-            time.sleep(1.2)
+    def ring_chime(kind, loud):
+        """A timer's three bright notes, or an alarm's insistent run; softer in quiet hours (alarms excepted)."""
+        if kind == 'alarm':
+            for _ in range(3):
+                speaker.play(audio.tone((880, 1175, 880, 1175), 140, 0.15 + 0.35 * loud))
+                time.sleep(0.9)
+        else:
+            vol = 0.12 if config.is_quiet(cfg) else 0.3
+            speaker.play(audio.tone((1046, 1318, 1568), 150, vol))
 
-    toolbox = tools.Tools(cfg, ring)
+    timers.Ringer(ring_chime, log)
+    bedside.start(log)
+    toolbox = tools.Tools(cfg)
     mic = audio.Mic(audio.safe_device(cfg.get('mic_device'))).start()
     ww = wake.WakeWord(cfg, VOSK_MODEL)
     set_state('asleep')
@@ -70,7 +87,8 @@ def main():
     failures = 0
     while True:
         try:
-            if not ww.wait(mic):
+            take(STOP_NOW)                                # a stop pressed while asleep means nothing
+            if not ww.wait(mic, stop=lambda: os.path.exists(WAKE_NOW)) and not take(WAKE_NOW):
                 continue
         except Exception as e:
             log('listening failed: %s' % e)
@@ -80,6 +98,7 @@ def main():
         log('woken')
         speaker.play(chime)
         time.sleep(0.25)
+        music.duck(True)
         try:
             cfg.update(config.load())                     # settings changed on the web page apply now
             toolbox.cfg = cfg
@@ -92,7 +111,12 @@ def main():
             log('conversation failed: %s' % str(e)[:200])
             speaker.play(audio.tone((440, 330), 160, 0.25))     # a low "that didn't work" tone
             time.sleep(min(30, 2 ** failures))
+        music.duck(False)
+        take(WAKE_NOW)
         set_state('asleep')
+        t = time.time()            # a breath before listening again: drop 1.5 s of audio so his own last words can't wake him
+        while time.time() - t < 1.5:
+            mic.read(timeout=0.5)
 
 
 if __name__ == '__main__':

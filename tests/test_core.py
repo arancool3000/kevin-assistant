@@ -142,8 +142,9 @@ def test_timers():
     t = tools.Tools(config.load())
     r = t.call('set_timer', {'minutes': 1, 'name': 'tea'})
     assert r['ok']
-    assert t.call('list_timers', {})['timers'][0]['name'] == 'tea'
-    assert t.call('cancel_timer', {'name': 'tea'})['cancelled'] == 1
+    assert [i['name'] for i in t.call('list_timers', {})['items']] == ['tea']
+    assert t.call('stop_timer', {'which': 'tea'})['stopped'] == ['tea']
+    assert t.call('list_timers', {})['items'] == []
 
 
 def test_unknown_tool_is_an_error_not_a_crash():

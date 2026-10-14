@@ -12,29 +12,34 @@
 1. Open **Kevin-Setup.exe**. Windows SmartScreen may warn about an unknown app (it isn't code-signed yet):
    *More info → Run anyway*. Then say **Yes** when Windows asks to let it make changes: writing a card needs
    administrator rights.
-   - *1. Your details:* Wi-Fi name and password, country, Gemini key, a password for Kevin's settings page.
-   - *2. The Pi:* its network name (`kevin`), a new user name and password for the Pi itself, Kevin's name, wake
-     phrase (common English words), voice, your town.
-   - *3. Set up* → **A**: choose your card (press *Refresh* after putting it in) → **Write card** → type
-     **ERASE**.
-2. The app downloads **Raspberry Pi OS Lite (64-bit)** straight from raspberrypi.com, writes it, reads the whole
+2. Follow the steps down the left side. *Next* checks each step before moving on, and your answers (never your
+   passwords or key) are remembered if you close the app and come back.
+   - **Welcome:** choose *A new Pi* (write the card for me), *I already wrote the card with Raspberry Pi Imager*
+     (with no customisation: only the settings are added), or *My Pi is already running*.
+   - **Wi-Fi:** filled in from the network this PC is on. *Use this PC's saved password* fills the password too;
+     the country comes from Windows.
+   - **Kevin:** paste your Gemini key (*Get a free key* opens the page) and press **Test key**. Choose his name,
+     wake phrase and voice, and your town (*Check* finds it on the map).
+   - **Logins:** the Pi's name on your network (`kevin`), a user name and password for the Pi, and a password for
+     Kevin's settings page. *Make one* creates a strong password; write them down.
+   - **Extras:** links for connecting your Claude or ChatGPT account and for the bedside screen, and the optional
+     *Help run KindleHub*.
+   - **Set up:** choose the card (press *Refresh* after putting it in), press **Write the card**, and type
+     **ERASE**. Each stage is ticked off: download, write, check, settings, eject.
+3. The app downloads **Raspberry Pi OS Lite (64-bit)** straight from raspberrypi.com, writes it, reads the whole
    card back to check it, adds your settings, and ejects the card. Only SD cards and USB card readers from
    4 GB to 512 GB are offered; the disk Windows runs from never is. If Windows pops up "you need to format the
    disk", click **Cancel**, never format it.
-3. Take the card out, put it in the Pi, connect the USB speakerphone, and power on.
-
-Already flashed the card with Raspberry Pi Imager (with *no* customisation)? Under the card list, pick its
-**bootfs** drive and press **Save settings only**.
-
-4. Wait **10–20 minutes** the first time: the Pi joins your Wi-Fi, sets its clock, installs Kevin, and plays a
-   **rising three-note chime** when he's ready. Say **"Hey Kevin"**.
-5. Settings: `http://kevin.local:8080` (use your Pi's name). If `.local` names don't work on your phone, use the
-   Pi's IP address from your router's device list: `http://192.168.x.y:8080`.
+4. Put the card in the Pi, connect the USB speakerphone, and power on. **Done** waits for Kevin to appear on
+   your network (10–20 minutes the first time: he joins your Wi-Fi, sets the clock and installs himself, then
+   plays a **rising three-note chime**), and then offers **Open Kevin's settings** and the **Phone remote**.
+5. Say **"Hey Kevin"**. If `.local` names don't work on your phone, use the Pi's IP address from your router's
+   device list: `http://192.168.x.y:8080`.
 
 ## Installing on a Pi that's already running
-Tab *3. Set up* → **B**: type the Pi's address (`kevin.local` or its IP). On tab 2 enter the user name and password
-the Pi **already** has (Wi-Fi fields aren't needed). The first time, the app shows the Pi's key fingerprint and
-asks you to confirm. Progress shows in the window; the settings page address is printed at the end.
+On *Welcome* choose **My Pi is already running**. On *Logins* enter the user name and password the Pi **already**
+has and its address (`kevin.local` or its IP). The first time, the app shows the Pi's key fingerprint and asks
+you to confirm. *Show details* on the *Set up* step shows the installer's progress line by line.
 
 ## Sounds Kevin makes
 | Sound | Meaning |

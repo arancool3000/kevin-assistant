@@ -7,9 +7,28 @@ end_conversation tool) or after `idle_seconds` of quiet.
 import asyncio
 import base64
 import json
+import os
+import re
 import time
 
-from . import audio, skills, tools
+from . import audio, config, skills, tools
+
+# How a conversation ends by itself: closing words then a few seconds of quiet; "hang on" waits much longer.
+CLOSING = re.compile(r"\b(thanks|thank you|cheers|ta|that'?s (all|it|everything)|good ?night|night night|bye|goodbye|see you|"
+                     r"nothing else|no that'?s fine|i'?m done|stop listening|go to sleep)\b", re.I)
+HOLD = re.compile(r"\b(hang on|hold on|one (more|other) thing|wait a (sec|second|minute|moment)|give me a (sec|second|minute|moment)|let me think)\b", re.I)
+CLOSE_QUIET, HOLD_FOR = 4.0, 60.0
+STOP_NOW = os.path.join(config.STATE, 'stop_now')
+
+
+def heard_cue(text):
+    """'close' / 'hold' / None for what the user just said (hold wins: "thanks, one more thing")."""
+    if HOLD.search(text or ''):
+        return 'hold'
+    if CLOSING.search(text or ''):
+        return 'close'
+    return None
+
 
 LIVE_URL = ('wss://generativelanguage.googleapis.com/ws/'
             'google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=%s')
@@ -32,6 +51,11 @@ def system_instruction(cfg):
         'stay alive between calls (so outputs stay on). Skills cannot watch something and speak up by themselves: if asked '
         'to "tell me when...", say so and offer a skill that checks it when asked. A sensor that needs an extra library '
         'needs the user to install it once over SSH (sudo /opt/bob-assistant/venv/bin/pip install <package>).',
+        'EVERYDAY: timers (several at once, by name) and alarms (a time of day; they ring until stopped -- "stop" '
+        'means stop_timer with no name); internet radio by station name and songs from the music folder; quick facts '
+        '(weather, rain soon, Wikipedia, definitions, currency, holidays, maths, unit conversions, and more). The user can '
+        'also press the talk button on the phone page or the bedside screen instead of saying the wake phrase. '
+        'When the user says thanks or goodnight and nothing else, you may stop: the conversation ends by itself.',
         'SAFETY: never tell anyone to connect 5 V to a GPIO pin or to power a motor or relay coil straight from one. '
         'Actions that delete things need a yes first (the tool will ask).',
         'WHEN SOMETHING FAILS, say in a few plain words what did not work and what the user can do. Never read out '
@@ -110,7 +134,7 @@ async def converse(cfg, key, mic, speaker, toolbox, log=print, on_state=None):
     log('conversation open (%s)' % model)
     state('listening')
     loop = asyncio.get_running_loop()
-    act = {'last': time.time(), 'tool': False, 'msg': time.time()}
+    act = {'last': time.time(), 'tool': False, 'msg': time.time(), 'said': '', 'cue': None}
     done = asyncio.Event()
     idle = max(4.0, float(cfg.get('idle_seconds', 12)))
 
@@ -133,6 +157,8 @@ async def converse(cfg, key, mic, speaker, toolbox, log=print, on_state=None):
             sc = msg.get('serverContent') or {}
             if sc.get('inputTranscription'):
                 act['last'] = time.time()        # the user is still talking
+                act['said'] = (act['said'] + ' ' + (sc['inputTranscription'].get('text') or ''))[-300:]
+                act['cue'] = heard_cue(act['said']) or act['cue']
             if sc.get('interrupted'):
                 speaker.flush()
             for part in ((sc.get('modelTurn') or {}).get('parts') or []):
@@ -143,6 +169,7 @@ async def converse(cfg, key, mic, speaker, toolbox, log=print, on_state=None):
                     act['last'] = time.time()
             if sc.get('turnComplete'):
                 act['last'] = time.time()
+                act['said'] = ''                 # the next thing they say starts fresh
                 state('listening')
             tc = msg.get('toolCall')
             if tc:
@@ -164,9 +191,19 @@ async def converse(cfg, key, mic, speaker, toolbox, log=print, on_state=None):
             if speaker.speaking() or act['tool']:
                 continue
             quiet_since = max(act['last'], speaker.busy_until)   # idle counts from when Kevin stopped speaking
-            if toolbox.ended and time.time() - act['msg'] > 1.5:
+            quiet = time.time() - quiet_since
+            if os.path.exists(STOP_NOW):                          # the stop button (web page / bedside screen)
+                try:
+                    os.unlink(STOP_NOW)
+                except OSError:
+                    pass
+                speaker.flush()
                 done.set()
-            elif time.time() - quiet_since > idle:
+            elif toolbox.ended and time.time() - act['msg'] > 1.5:
+                done.set()
+            elif act['cue'] == 'close' and quiet > CLOSE_QUIET:  # "thanks" ... and nothing more
+                done.set()
+            elif quiet > (HOLD_FOR if act['cue'] == 'hold' else idle):
                 done.set()
 
     tasks = [asyncio.ensure_future(t) for t in (send_mic(), receive(), watchdog())]
@@ -185,7 +222,7 @@ async def converse(cfg, key, mic, speaker, toolbox, log=print, on_state=None):
         except Exception:
             pass
         state('asleep')
-    return 'goodbye' if toolbox.ended else 'quiet'
+    return 'goodbye' if toolbox.ended or act['cue'] == 'close' else 'quiet'
 
 
 def skills_changed_since(t):

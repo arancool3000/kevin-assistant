@@ -19,7 +19,18 @@ on it's one of his abilities. Any one skill can be switched off or rolled back o
 - **Wakes on the Pi** — *"Hey Kevin"* is heard offline; nothing leaves the Pi until then.
 - **Builds himself** — skills for anything on the GPIO pins, I²C, serial or the web.
 - **Updates himself** — new releases install automatically, and roll back if they fail.
+- **Timers, alarms and music** — named timers, wake-up alarms that ring until you stop them, internet radio (any
+  station in the world) and songs from a folder on the Pi. Music drops to a murmur while he listens.
+- **Knows things** — rain in the next hour, UV, air quality, Wikipedia, definitions, currency, holidays, maths, unit
+  conversions, recipes, the ISS, trivia and more, all from free services that need no account.
+- **Ends conversations politely** — "thanks" or "goodnight" and he goes back to sleep; "hang on" and he waits.
+- **A phone remote and a StandBy clock** — talk button, timers you can stop or snooze, music controls, and a big
+  night-time clock for a phone on a stand.
+- **An optional bedside screen** — a £10 Arduino Nano with a 16×2 LCD and a joystick shows the time, weather and
+  timers, and its button talks to Kevin ([examples/bedside-screen](examples/bedside-screen/)).
 - **Has a settings page** — `http://kevin.local:8080`, from any phone or computer at home.
+- **Can ask your Claude or ChatGPT** — optional: connect your own subscription for the hard questions
+  ([docs/AI-ACCOUNTS.md](docs/AI-ACCOUNTS.md)).
 - **Has a Windows setup app** — Wi-Fi, password and key, without typing a single command.
 
 ---
@@ -71,12 +82,17 @@ enter the code, choose a password and paste your Gemini key. Say "Hey Kevin".
 
 ## Things to say
 
-- "What's the weather tomorrow?" · "Set a timer for 10 minutes" · "Remember the spare key is in the blue box"
+- "What's the weather tomorrow?" · "Will it rain in the next hour?" · "Remember the spare key is in the blue box"
+- "Set a pasta timer for 10 minutes" · "Wake me up at 7:30" · "Add 2 minutes" · "Snooze" · "Stop"
+- "Play Radio Paradise" · "Play some music" · "Next song" · "Quieter" · "What's playing?"
+- "What's 15% of 240?" · "How many cups in a litre?" · "Define serendipity" · "How many days until Christmas?"
 - "What's in the news?" (Kevin can search the web) · "How hot is the Pi running?"
 - "I've wired a button to GPIO 27 — make a skill that tells me if it's pressed." · "Make a skill that switches the relay on GPIO 22."
 - "What skills do you have?" · "Switch off the desk LED skill." · "Roll back the desk LED skill." · "Delete the test skill."
 - First skill, read-only: "Find what's on I2C" · "Install the example temperature skill" (a BME280/BMP280).
-- "Goodbye" ends the conversation (or just stop talking).
+- "Thanks" or "goodbye" ends the conversation (or just stop talking); "hang on" makes him wait.
+
+On your phone: `http://kevin.local:8080/app` (remote) and `/standby` (the clock). Add them to your home screen.
 
 How skills work, with examples: [docs/SKILLS.md](docs/SKILLS.md).
 

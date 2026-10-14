@@ -38,7 +38,23 @@ DEFAULTS = {
     'repo': 'https://github.com/arancool3000/kevin-assistant',
     'web_port': 8080,
     'log_conversations': False,          # transcripts are never written unless this is turned on
+    'music_dir': '/var/lib/bob-assistant/music',   # songs for "play some music" (mp3, m4a, ogg, flac, wav)
+    'music_volume': 60,
+    'quiet_from': 22,                    # quiet hours: softer chimes, a dim bedside screen (alarms still ring)
+    'quiet_to': 7,
+    'quiet_enabled': True,
+    'bedside_serial': '',                # USB serial number of a NanoTool-style bedside screen; empty = find it by itself
 }
+
+
+def is_quiet(cfg=None, now=None):
+    """Inside quiet hours right now? (22 to 7 wraps past midnight.)"""
+    c = cfg or load()
+    if not c.get('quiet_enabled', True):
+        return False
+    h = (now or __import__('time').localtime()).tm_hour
+    a, b = int(c.get('quiet_from', 22)), int(c.get('quiet_to', 7))
+    return (a <= h < b) if a < b else (h >= a or h < b)
 
 
 def _read(path):
@@ -66,8 +82,10 @@ def save(cfg):
 
 def load_secrets():
     s = _read(SECRETS_FILE)
-    key = os.environ.get('GEMINI_API_KEY') or s.get('gemini_api_key', '')
-    return {'gemini_api_key': key, 'web_password': s.get('web_password', '')}
+    out = dict(s)                     # every key kept (e.g. claude_token), so a save never drops one
+    out['gemini_api_key'] = os.environ.get('GEMINI_API_KEY') or s.get('gemini_api_key', '')
+    out.setdefault('web_password', '')
+    return out
 
 
 def save_secrets(s):

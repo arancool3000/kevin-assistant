@@ -360,7 +360,160 @@ def install_over_ssh(host, user, password, d, out, confirm_key=None):
         cli.close()
 
 
-# ---- the window ----------------------------------------------------------------------------------------
+# ---- helpers for the window (no window needed: tested on any OS) ---------------------------------------
+
+SAVED = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'Kevin Setup', 'answers.json')
+REMEMBER = ('wifi_ssid', 'country', 'hostname', 'username', 'name', 'wake_phrase', 'voice', 'town')   # never secrets
+VOICE_NOTES = {'Charon': 'calm, deep', 'Puck': 'bright, upbeat', 'Kore': 'firm, clear', 'Fenrir': 'warm, excitable',
+               'Aoede': 'breezy', 'Leda': 'youthful', 'Orus': 'steady', 'Zephyr': 'light, airy'}
+
+
+def _run_quiet(cmd, timeout=8):
+    import subprocess
+    flags = 0x08000000 if os.name == 'nt' else 0              # CREATE_NO_WINDOW: no console flashes up
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=flags,
+                           encoding='utf-8', errors='replace')
+        return r.stdout or ''
+    except Exception:
+        return ''
+
+
+def parse_netsh_ssid(text):
+    """The connected Wi-Fi's name from `netsh wlan show interfaces`."""
+    for line in text.splitlines():
+        m = re.match(r'^\s*SSID\s*:\s*(.+?)\s*$', line)          # "SSID", not "BSSID"
+        if m:
+            return m.group(1)
+    return ''
+
+
+def parse_netsh_key(text):
+    """The saved password from `netsh wlan show profile name=... key=clear` ("Key Content")."""
+    m = re.search(r'Key Content\s*:\s*(.+?)\s*$', text, re.M)
+    return m.group(1) if m else ''
+
+
+def this_pc_wifi():
+    return parse_netsh_ssid(_run_quiet(['netsh', 'wlan', 'show', 'interfaces'])) if os.name == 'nt' else ''
+
+
+def saved_wifi_password(ssid):
+    """Windows keeps the password of every network it has joined; reading it back is the user's own choice (a button)."""
+    if os.name != 'nt' or not ssid:
+        return ''
+    return parse_netsh_key(_run_quiet(['netsh', 'wlan', 'show', 'profile', 'name=' + ssid, 'key=clear']))
+
+
+def this_pc_country():
+    """GB, US, ... from the Windows region (or the locale elsewhere); GB if unknown."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+            buf = ctypes.create_unicode_buffer(16)
+            if ctypes.windll.kernel32.GetUserDefaultGeoName(buf, 16):
+                code = buf.value.upper()
+                if re.match(r'^[A-Z]{2}$', code):
+                    return code
+        import locale
+        loc = (locale.getlocale()[0] or '')
+        m = re.search(r'[_-]([A-Z]{2})', loc)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return 'GB'
+
+
+def strong_password(n=14):
+    """Easy to type, hard to guess: letters and digits, no look-alikes (0 O 1 l I)."""
+    alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    return ''.join(secrets.choice(alphabet) for _ in range(n))
+
+
+def test_gemini_key(key, timeout=10):
+    """(ok, message): asks Google whether the key works (only Google sees it)."""
+    import urllib.error
+    import urllib.request
+    key = (key or '').strip()
+    if not key:
+        return False, 'Paste your key first.'
+    try:
+        req = urllib.request.Request('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1',
+                                     headers={'x-goog-api-key': key})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            json.load(r)
+        return True, 'The key works.'
+    except urllib.error.HTTPError as e:
+        if e.code in (400, 401, 403):
+            return False, 'Google says this key is not valid. Copy it again from AI Studio.'
+        return False, 'Google answered with an error (%s). Try again in a minute.' % e.code
+    except Exception:
+        return False, 'Could not reach Google from this PC. Check the internet connection.'
+
+
+def check_town(town, timeout=10):
+    """(ok, 'Leeds, United Kingdom') for the weather town, using the free Open-Meteo place search."""
+    import urllib.parse
+    import urllib.request
+    if not (town or '').strip():
+        return False, 'Optional: type your town for the weather.'
+    try:
+        q = urllib.parse.urlencode({'name': town.strip(), 'count': 1, 'language': 'en', 'format': 'json'})
+        with urllib.request.urlopen('https://geocoding-api.open-meteo.com/v1/search?' + q, timeout=timeout) as r:
+            hit = (json.load(r).get('results') or [None])[0]
+        if not hit:
+            return False, 'No place called "%s" was found.' % town.strip()
+        return True, '%s, %s' % (hit['name'], hit.get('country', ''))
+    except Exception:
+        return False, 'Could not check it (no internet?). It will be looked up on the Pi.'
+
+
+def kevin_answers(host, timeout=4):
+    """Is Kevin's settings page answering yet (http://<host>:8080)?"""
+    import urllib.request
+    try:
+        with urllib.request.urlopen('http://%s:8080/login' % host, timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def load_answers():
+    try:
+        with open(SAVED, encoding='utf-8') as f:
+            d = json.load(f)
+        return {k: str(v) for k, v in d.items() if k in REMEMBER and v}      # an empty answer keeps the default
+    except (OSError, ValueError):
+        return {}
+
+
+def save_answers(d):
+    try:
+        os.makedirs(os.path.dirname(SAVED), exist_ok=True)
+        with open(SAVED, 'w', encoding='utf-8') as f:
+            json.dump({k: d.get(k, '') for k in REMEMBER}, f, indent=2)
+    except OSError:
+        pass
+
+
+# ---- the window: a step-by-step wizard -------------------------------------------------------------------
+
+# Kevin's colours: near-black, with the blue-to-violet of his face
+BG, PANEL, SIDE, INK, DIM, ACC, ACC2, GOOD, BAD, LINE, FIELD = ('#0b0b10', '#15141f', '#07070b', '#f5f5f7', '#9a99b3',
+                                                               '#7d79ff', '#6a66f2', '#30d158', '#ff6b61', '#2a2940', '#1d1c2b')
+GRAD = ('#2f8cff', '#5e5ce6', '#a65cf0')
+
+
+def _mix(a, b, t):
+    a, b = [int(a[i:i + 2], 16) for i in (1, 3, 5)], [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#%02x%02x%02x' % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def gradient(t):
+    """0..1 along Kevin's blue -> indigo -> violet."""
+    return _mix(GRAD[0], GRAD[1], t * 2) if t < 0.5 else _mix(GRAD[1], GRAD[2], (t - 0.5) * 2)
+
 
 def gui():
     import queue
@@ -375,145 +528,476 @@ def gui():
             pass
     root = tk.Tk()
     root.title('Kevin Setup')
-    root.geometry('700x880')
-    root.minsize(620, 780)
+    root.geometry('980x700')
+    root.minsize(900, 640)
+    root.configure(bg=BG)
+    FONT = 'Segoe UI' if os.name == 'nt' else 'Helvetica'
+    st = ttk.Style()
     try:
-        ttk.Style().theme_use('vista' if os.name == 'nt' else 'clam')
+        st.theme_use('clam')
     except tk.TclError:
         pass
-    frm = ttk.Frame(root, padding=18)
-    frm.pack(fill='both', expand=True)
-    ttk.Label(frm, text='Kevin Setup', font=('Segoe UI', 20, 'bold')).pack(anchor='w')
-    ttk.Label(frm, text='A voice assistant for your Raspberry Pi that you build by talking to it.', foreground='#555').pack(anchor='w', pady=(0, 10))
-    nb = ttk.Notebook(frm)
-    nb.pack(fill='both', expand=True)
+    st.configure('.', background=BG, foreground=INK, font=(FONT, 10))
+    st.configure('Card.TFrame', background=PANEL)
+    st.configure('Side.TFrame', background=SIDE)
+    st.configure('TLabel', background=PANEL)
+    st.configure('Hint.TLabel', background=PANEL, foreground=DIM, font=(FONT, 9))
+    st.configure('H1.TLabel', background=PANEL, font=(FONT, 20, 'bold'))
+    st.configure('Lead.TLabel', background=PANEL, foreground=DIM, font=(FONT, 11))
+    st.configure('Good.TLabel', background=PANEL, foreground=GOOD, font=(FONT, 9, 'bold'))
+    st.configure('Bad.TLabel', background=PANEL, foreground=BAD, font=(FONT, 9, 'bold'))
+    st.configure('TEntry', fieldbackground=FIELD, foreground=INK, insertcolor=INK, bordercolor=LINE, lightcolor=LINE,
+                 darkcolor=LINE, padding=8)
+    st.map('TEntry', bordercolor=[('focus', ACC)], lightcolor=[('focus', ACC)])
+    st.configure('TCombobox', fieldbackground=FIELD, foreground=INK, background=FIELD, arrowcolor=INK, bordercolor=LINE,
+                 lightcolor=LINE, darkcolor=LINE, padding=7)
+    st.map('TCombobox', fieldbackground=[('readonly', FIELD)], foreground=[('readonly', INK)], selectbackground=[('readonly', FIELD)])
+    root.option_add('*TCombobox*Listbox.background', FIELD)
+    root.option_add('*TCombobox*Listbox.foreground', INK)
+    root.option_add('*TCombobox*Listbox.selectBackground', ACC)
+    for w in ('TCheckbutton', 'TRadiobutton'):
+        st.configure(w, background=PANEL, foreground=INK, indicatorbackground=FIELD, indicatorforeground=ACC, focuscolor=PANEL)
+        st.map(w, background=[('active', PANEL)], indicatorbackground=[('selected', ACC)], indicatorforeground=[('selected', 'white')])
+    st.configure('Accent.TButton', background=ACC, foreground='white', bordercolor=ACC, lightcolor=ACC, darkcolor=ACC,
+                 padding=(20, 10), font=(FONT, 10, 'bold'))
+    st.map('Accent.TButton', background=[('disabled', '#34335a'), ('active', ACC2)], foreground=[('disabled', '#77769a')])
+    st.configure('TButton', background='#23223a', foreground=INK, bordercolor=LINE, lightcolor='#23223a', darkcolor='#23223a',
+                 padding=(14, 8))
+    st.map('TButton', background=[('active', '#2e2d4a'), ('disabled', '#1a1928')], foreground=[('disabled', '#5d5c7a')])
+    st.configure('Horizontal.TProgressbar', troughcolor='#1d1c2b', background=ACC, bordercolor=LINE, lightcolor=ACC,
+                 darkcolor=ACC2, thickness=12)
+    st.configure('TSeparator', background=LINE)
+
+    answers = load_answers()
     v = {}
 
-    def field(parent, label, key, default='', show=None, values=None, hint=None, editable=False):
-        ttk.Label(parent, text=label).pack(anchor='w', pady=(8, 2))
-        var = tk.StringVar(value=default)
+    def var(key, default=''):
+        if key not in v:
+            v[key] = tk.StringVar(value=answers.get(key, default))
+        return v[key]
+
+    mode = tk.StringVar(value='card')          # card (new Pi) | imager (settings onto a flashed card) | ssh
+    helper_on = tk.BooleanVar(value=False)     # "Help run KindleHub": off by default
+
+    # -- layout: sidebar with the steps, a page, and Back / Next --
+    side = ttk.Frame(root, style='Side.TFrame', width=230)
+    side.pack(side='left', fill='y')
+    side.pack_propagate(False)
+    # Kevin's face: a gradient tile with two eyes that blink, and bounce while he is working
+    face = tk.Canvas(side, width=86, height=86, bg=SIDE, highlightthickness=0)
+    face.pack(pady=(30, 6))
+    for y in range(86):
+        face.create_line(4, y, 82, y, fill=gradient(y / 85.0))
+    for (x0, y0, x1, y1) in ((0, 0, 14, 14), (72, 0, 86, 14), (0, 72, 14, 86), (72, 72, 86, 86)):   # round the corners
+        face.create_rectangle(x0, y0, x1, y1, fill=SIDE, outline=SIDE)
+    for cx, cy in ((14, 14), (72, 14), (14, 72), (72, 72)):
+        face.create_oval(cx - 14, cy - 14, cx + 14, cy + 14, fill=gradient(cy / 85.0), outline='')
+    face.create_rectangle(4, 14, 82, 72, fill='', outline='')
+    eyes = [face.create_rectangle(x, 30, x + 10, 56, fill='white', outline='') for x in (29, 47)]
+    look = {'t': 0, 'blink': 0}
+
+    def animate():
+        look['t'] += 1
+        t = look['t']
+        if look['blink'] > 0:
+            look['blink'] -= 1
+        elif t % 45 == 0 or (t % 13 == 0 and __import__('random').random() < 0.08):
+            look['blink'] = 2
+        h = 3 if look['blink'] else 26
+        bob = int(3 * __import__('math').sin(t / 2.0)) if work.get('busy') else 0
+        for i, e in enumerate(eyes):
+            x = 29 + 18 * i
+            face.coords(e, x, 43 - h / 2 + bob, x + 10, 43 + h / 2 + bob)
+        root.after(90, animate)
+    tk.Label(side, text='Kevin Setup', bg=SIDE, fg='white', font=(FONT, 15, 'bold')).pack(pady=(4, 22))
+    body = tk.Frame(root, bg=BG)
+    body.pack(side='left', fill='both', expand=True)
+    stripe = tk.Canvas(body, height=4, bg=BG, highlightthickness=0)
+    stripe.pack(fill='x', padx=26, pady=(26, 0))
+    stripe.bind('<Configure>', lambda e: [stripe.create_line(x, 0, x, 4, fill=gradient(x / max(1, e.width - 1)))
+                                          for x in range(e.width)])
+    card = ttk.Frame(body, style='Card.TFrame', padding=(34, 28))
+    card.pack(fill='both', expand=True, padx=26)
+    nav = tk.Frame(body, bg=BG)
+    nav.pack(fill='x', padx=26, pady=16)
+    back_btn = ttk.Button(nav, text='← Back')
+    next_btn = ttk.Button(nav, text='Next →', style='Accent.TButton')
+    back_btn.pack(side='left')
+    next_btn.pack(side='right')
+
+    STEPS = ['Welcome', 'Wi-Fi', 'Kevin', 'Logins', 'Extras', 'Set up', 'Done']
+    step_labels = []
+    for i, name in enumerate(STEPS):
+        lab = tk.Label(side, text='   %d   %s' % (i + 1, name), bg=SIDE, fg='#8f8eb0', font=(FONT, 11), anchor='w', pady=8)
+        lab.pack(fill='x', padx=10)
+        step_labels.append(lab)
+    tk.Label(side, text='Nothing leaves this PC except to\nGoogle (to check your key), the\nRaspberry Pi website (the OS image)\nand your own Pi.',
+             bg=SIDE, fg='#56557a', font=(FONT, 8), justify='left', anchor='w').pack(side='bottom', fill='x', padx=22, pady=20)
+
+    pages = {}
+
+    def page(name):
+        f = ttk.Frame(card, style='Card.TFrame')
+        pages[name] = f
+        return f
+
+    def h1(parent, text, lead=None):
+        ttk.Label(parent, text=text, style='H1.TLabel').pack(anchor='w')
+        if lead:
+            ttk.Label(parent, text=lead, style='Lead.TLabel', wraplength=640, justify='left').pack(anchor='w', pady=(4, 16))
+
+    def field(parent, label, key, default='', show=None, values=None, hint=None, width=None):
+        ttk.Label(parent, text=label, font=(FONT, 10, 'bold')).pack(anchor='w', pady=(10, 3))
+        row = ttk.Frame(parent, style='Card.TFrame')
+        row.pack(fill='x')
         if values:
-            w = ttk.Combobox(parent, textvariable=var, values=values, state='normal' if editable else 'readonly')
+            w = ttk.Combobox(row, textvariable=var(key, default), values=values, state='readonly', width=width or 40)
         else:
-            w = ttk.Entry(parent, textvariable=var, show=show or '')
-        w.pack(fill='x')
+            w = ttk.Entry(row, textvariable=var(key, default), show=show or '', width=width or 44)
+        w.pack(side='left')
+        if show:
+            shown = tk.BooleanVar(value=False)
+            ttk.Checkbutton(row, text='Show', variable=shown,
+                            command=lambda: w.configure(show='' if shown.get() else show)).pack(side='left', padx=8)
         if hint:
-            ttk.Label(parent, text=hint, foreground='#777', font=('Segoe UI', 8)).pack(anchor='w')
-        v[key] = var
+            ttk.Label(parent, text=hint, style='Hint.TLabel', wraplength=640, justify='left').pack(anchor='w', pady=(2, 0))
+        return row, w
 
-    p1 = ttk.Frame(nb, padding=12)
-    nb.add(p1, text='1. Your details')
-    field(p1, 'Wi-Fi name', 'wifi_ssid', hint='Exactly as it appears on your phone (capitals matter). Not needed for option B.')
-    field(p1, 'Wi-Fi password', 'wifi_password', show='•')
-    field(p1, 'Wi-Fi country (two letters)', 'country', 'GB', values=COUNTRIES, editable=True)
-    field(p1, 'Gemini API key', 'gemini_api_key', show='•', hint='Free from Google AI Studio. Kevin uses it to talk.')
-    ttk.Button(p1, text='Get a free Gemini key...', command=lambda: webbrowser.open(KEY_URL)).pack(anchor='w', pady=4)
-    field(p1, "Password for Kevin's settings page", 'web_password', show='•')
+    def note(parent):
+        lab = ttk.Label(parent, text='', style='Hint.TLabel', wraplength=640)
+        lab.pack(anchor='w', pady=(4, 0))
 
-    p2 = ttk.Frame(nb, padding=12)
-    nb.add(p2, text='2. The Pi')
-    field(p2, 'Pi name on your network', 'hostname', 'kevin', hint='Settings page: http://<name>.local:8080')
-    field(p2, 'Pi user name', 'username', 'pi')
-    field(p2, 'Pi password (for SSH)', 'password', show='•', hint='Option A: a new password. Option B: the one the Pi already has.')
-    field(p2, 'Assistant name', 'name', 'Kevin')
-    field(p2, 'Wake phrase', 'wake_phrase', 'hey kevin', hint='Common English words only (the offline recogniser must know them).')
-    field(p2, 'Voice', 'voice', 'Charon', values=VOICES)
-    field(p2, 'Your town (for the weather)', 'town', '')
-    helper_on = tk.BooleanVar(value=False)                  # off by default: only the owner turns it on
-    ttk.Checkbutton(p2, text='Help run KindleHub (optional)', variable=helper_on).pack(anchor='w', pady=(12, 0))
-    ttk.Label(p2, text='Lends the Pi\'s spare time to KindleHub (free games for e-readers): it plays chess moves for '
-                       'its computer opponent and nothing else, using at most half of one core at lowest priority. '
-                       'Perk: link it to your KindleHub account for KindleTube and KindlePoki as on Plus. '
-                       'Switch it off any time on Kevin\'s settings page.', foreground='#777', font=('Segoe UI', 8),
-              wraplength=600).pack(anchor='w')
+        def say(ok, text):
+            lab.configure(text=('✓ ' if ok else '✗ ') + text if ok is not None else text,
+                          style='Good.TLabel' if ok else 'Bad.TLabel' if ok is False else 'Hint.TLabel')
+        return say
 
-    p3 = ttk.Frame(nb, padding=12)
-    nb.add(p3, text='3. Set up')
-    log = tk.Text(p3, height=14, wrap='word', font=('Consolas', 9))
+    def in_background(fn, then):
+        """Run fn() off the window's thread, then then(result) on it."""
+        threading.Thread(target=lambda: (lambda r: root.after(0, lambda: then(r)))(fn()), daemon=True).start()
+
+    # 1. Welcome
+    p = page('Welcome')
+    h1(p, 'Set up Kevin', 'A voice assistant for your Raspberry Pi that you build by talking to it. This takes about five '
+                          'minutes here, then 10-20 minutes on the Pi by itself.')
+    ttk.Label(p, text='You need', font=(FONT, 11, 'bold')).pack(anchor='w', pady=(4, 2))
+    for item in ('A Raspberry Pi 4 or 5 (3 B+ works, slowly) and its power supply',
+                 'A microSD card, 8 GB or more, and a way to plug it into this PC',
+                 'A USB speakerphone (or a USB microphone and speaker)',
+                 'A free Gemini API key from Google (the next steps show you where)'):
+        ttk.Label(p, text='•  ' + item).pack(anchor='w', pady=1)
+    ttk.Label(p, text='How are you setting it up?', font=(FONT, 11, 'bold')).pack(anchor='w', pady=(18, 4))
+    for val, txt, sub in (('card', 'A new Pi: write the microSD card for me', 'Downloads Raspberry Pi OS, writes and checks the card, adds your settings.'),
+                          ('imager', 'I already wrote the card with Raspberry Pi Imager', 'Only adds the settings to it (no customisation in Imager).'),
+                          ('ssh', 'My Pi is already running', 'Installs Kevin over the network.')):
+        ttk.Radiobutton(p, text=txt, value=val, variable=mode).pack(anchor='w', pady=(6, 0))
+        ttk.Label(p, text='      ' + sub, style='Hint.TLabel').pack(anchor='w')
+
+    # 2. Wi-Fi
+    p = page('Wi-Fi')
+    h1(p, 'Wi-Fi', 'The Pi joins this network when it first starts. (Not needed if your Pi is already running.)')
+    var('wifi_ssid', this_pc_wifi())
+    _r, _w = field(p, 'Wi-Fi name', 'wifi_ssid', hint='Exactly as your phone shows it: capitals matter. Filled in from this PC.')
+    _r, _w = field(p, 'Wi-Fi password', 'wifi_password', show='•')
+    wifi_say = note(p)
+
+    def fill_wifi_password():
+        pw = saved_wifi_password(v['wifi_ssid'].get().strip())
+        if pw:
+            v['wifi_password'].set(pw)
+            wifi_say(True, 'Filled in from this PC.')
+        else:
+            wifi_say(False, 'This PC has no saved password for that network: type it in.')
+    ttk.Button(_r, text='Use this PC\'s saved password', command=fill_wifi_password).pack(side='left', padx=4)
+    field(p, 'Country', 'country', this_pc_country(), values=COUNTRIES, width=8,
+          hint='Wi-Fi rules differ by country. Taken from Windows.')
+
+    # 3. Kevin
+    p = page('Kevin')
+    h1(p, 'Kevin', 'His name, his voice, and the key he uses to talk.')
+    krow, _w = field(p, 'Gemini API key', 'gemini_api_key', show='•',
+                     hint='Free: sign in with a Google account, press "Create API key", copy it here.')
+    key_say = note(p)
+    ttk.Button(krow, text='Get a free key', command=lambda: webbrowser.open(KEY_URL)).pack(side='left', padx=4)
+
+    def try_key(btn):
+        btn.state(['disabled'])
+        key_say(None, 'Checking with Google…')
+        in_background(lambda: test_gemini_key(v['gemini_api_key'].get()),
+                      lambda r: (key_say(*r), btn.state(['!disabled'])))
+    tb = ttk.Button(krow, text='Test key')
+    tb.configure(command=lambda: try_key(tb))
+    tb.pack(side='left')
+    two = ttk.Frame(p, style='Card.TFrame')
+    two.pack(fill='x')
+    left, right = ttk.Frame(two, style='Card.TFrame'), ttk.Frame(two, style='Card.TFrame')
+    left.pack(side='left', fill='x', expand=True)
+    right.pack(side='left', fill='x', expand=True, padx=(20, 0))
+    field(left, 'Name', 'name', 'Kevin', width=22)
+    field(right, 'Wake phrase', 'wake_phrase', 'hey kevin', width=22, hint='Two common words work best.')
+    field(left, 'Voice', 'voice', 'Charon', values=['%s' % n for n in VOICES], width=20)
+    vnote = ttk.Label(left, text='', style='Hint.TLabel')
+    vnote.pack(anchor='w')
+    v['voice'].trace_add('write', lambda *a: vnote.configure(text=VOICE_NOTES.get(v['voice'].get(), '')))
+    vnote.configure(text=VOICE_NOTES.get(v['voice'].get(), ''))
+    trow, _w = field(right, 'Town (for the weather)', 'town', width=22)
+    town_say = note(right)
+    tbtn = ttk.Button(trow, text='Check')
+    tbtn.configure(command=lambda: (town_say(None, 'Looking it up…'),
+                                    in_background(lambda: check_town(v['town'].get()), lambda r: town_say(*r))))
+    tbtn.pack(side='left', padx=4)
+
+    # 4. Logins
+    p = page('Logins')
+    h1(p, 'Logins', 'Two passwords: one for the Pi itself (for SSH, if you ever need it) and one for Kevin\'s settings '
+                    'page. Write them down somewhere safe.')
+
+    def gen(key):
+        v[key].set(strong_password())
+    r1, _w = field(p, 'Pi name on your network', 'hostname', 'kevin', hint='Then the settings page is http://<name>.local:8080')
+    r2, _w = field(p, 'Pi user name', 'username', 'pi')
+    r3, _w = field(p, 'Pi password', 'password', show='•', hint='A new Pi: choose one (8+ characters). A running Pi: the one it has.')
+    ttk.Button(r3, text='Make one', command=lambda: gen('password')).pack(side='left', padx=4)
+    r4, _w = field(p, 'Settings page password', 'web_password', show='•', hint='6+ characters. You sign in to Kevin\'s page with it.')
+    ttk.Button(r4, text='Make one', command=lambda: gen('web_password')).pack(side='left', padx=4)
+    hrow, _w = field(p, 'Pi address (only for a Pi that is already running)', 'ssh_host', 'kevin.local',
+                     hint='Its name with .local, or its IP address from your router.')
+
+    # 5. Extras
+    p = page('Extras')
+    h1(p, 'Extras', 'All optional, and all can be changed later on Kevin\'s settings page.')
+    ttk.Label(p, text='Your Claude or ChatGPT account', font=(FONT, 11, 'bold')).pack(anchor='w', pady=(6, 2))
+    ttk.Label(p, text='Kevin can hand hard questions (maths, code, planning) to your own Claude Pro/Max or ChatGPT Plus/Pro '
+                      'subscription. You connect it on the settings page after setup: it takes two minutes.',
+              wraplength=640, justify='left').pack(anchor='w')
+    ttk.Button(p, text='How to connect an account', command=lambda: webbrowser.open(
+        'https://github.com/%s/blob/main/docs/AI-ACCOUNTS.md' % REPO)).pack(anchor='w', pady=6)
+    ttk.Label(p, text='A bedside screen', font=(FONT, 11, 'bold')).pack(anchor='w', pady=(14, 2))
+    ttk.Label(p, text='A £10 Arduino Nano with a little LCD and a joystick shows the time, weather and timers, and its button '
+                      'talks to Kevin.', wraplength=640, justify='left').pack(anchor='w')
+    ttk.Button(p, text='Parts and wiring', command=lambda: webbrowser.open(
+        'https://github.com/%s/tree/main/examples/bedside-screen' % REPO)).pack(anchor='w', pady=6)
+    ttk.Label(p, text='Help run KindleHub', font=(FONT, 11, 'bold')).pack(anchor='w', pady=(14, 2))
+    ttk.Checkbutton(p, text='Lend the Pi\'s spare time to KindleHub (free games for e-readers)', variable=helper_on).pack(anchor='w')
+    ttk.Label(p, text='It plays chess moves for KindleHub\'s computer opponent and nothing else, using at most half of one '
+                      'core at the lowest priority. Off unless you tick it.', style='Hint.TLabel', wraplength=640).pack(anchor='w')
+
+    # 6. Set up
+    p = page('Set up')
+    h1(p, 'Set up', '')
+    lead = ttk.Label(p, text='', style='Lead.TLabel', wraplength=640, justify='left')
+    lead.pack(anchor='w', pady=(0, 10))
+    pick = ttk.Frame(p, style='Card.TFrame')
+    pick.pack(fill='x')
+    choice = tk.StringVar()
+    chooser = ttk.Combobox(pick, textvariable=choice, state='readonly', width=52)
+    chooser.pack(side='left')
+    refresh_btn = ttk.Button(pick, text='Refresh')
+    refresh_btn.pack(side='left', padx=6)
+    go_btn = ttk.Button(p, text='Start', style='Accent.TButton')
+    go_btn.pack(anchor='w', pady=14)
+    stage_box = ttk.Frame(p, style='Card.TFrame')
+    stage_box.pack(fill='x')
+    bar = ttk.Progressbar(p, maximum=1000, style='Horizontal.TProgressbar')
+    bar.pack(fill='x', pady=(10, 2))
+    status = tk.StringVar()
+    ttk.Label(p, textvariable=status, style='Hint.TLabel').pack(anchor='w')
+    cancel_btn = ttk.Button(p, text='Cancel', state='disabled')
+    cancel_btn.pack(anchor='e')
+    show_log = tk.BooleanVar(value=False)
+    log = tk.Text(p, height=8, wrap='word', font=('Consolas', 9), relief='flat', bg='#0f0e18', fg='#c9c8e0',
+                  insertbackground=INK, highlightthickness=0)
+    ttk.Checkbutton(p, text='Show details', variable=show_log,
+                    command=lambda: log.pack(fill='both', expand=True, pady=(6, 0)) if show_log.get() else log.pack_forget()).pack(anchor='w')
+
+    # 7. Done
+    p = page('Done')
+    h1(p, 'Almost there', '')
+    done_lead = ttk.Label(p, text='', style='Lead.TLabel', wraplength=640, justify='left')
+    done_lead.pack(anchor='w', pady=(0, 10))
+    wait_say = ttk.Label(p, text='', font=(FONT, 12, 'bold'))
+    wait_say.pack(anchor='w', pady=8)
+    wait_bar = ttk.Progressbar(p, mode='indeterminate', style='Horizontal.TProgressbar')
+    wait_bar.pack(fill='x')
+    links = ttk.Frame(p, style='Card.TFrame')
+    links.pack(anchor='w', pady=14)
+    open_btn = ttk.Button(links, text='Open Kevin\'s settings', style='Accent.TButton', state='disabled')
+    open_btn.pack(side='left')
+    app_btn = ttk.Button(links, text='Phone remote', state='disabled')
+    app_btn.pack(side='left', padx=8)
+    tips = ttk.Label(p, text='', wraplength=640, justify='left')
+    tips.pack(anchor='w', pady=(6, 0))
+
+    # -- moving between steps --
+    cur = {'i': 0}
     lines = queue.Queue()
+    stop = threading.Event()
+    work = {'busy': False, 'progress': None, 'stage': None}
+    disks, drives = {}, {}
 
     def out(text):
         lines.put(text)
 
-    ui = {'progress': None}
+    def wanted_steps():
+        return [s for s in STEPS if not (s == 'Wi-Fi' and mode.get() == 'ssh')]
 
-    def pump():
-        try:
-            while True:
-                log.insert('end', lines.get_nowait() + '\n')
-                log.see('end')
-        except queue.Empty:
-            pass
-        p = ui['progress']
-        if p:
-            stage, done, total = p
-            bar['value'] = 1000 * done / max(total, 1)
-            status.set('%s %.1f of %.1f GB' % ('Writing' if stage == 'write' else 'Checking', done / 1e9, total / 1e9))
-        else:
-            bar['value'] = 0
-            status.set('')
-        root.after(100, pump)
+    def show(name):
+        for f in pages.values():
+            f.pack_forget()
+        pages[name].pack(fill='both', expand=True)
+        steps = wanted_steps()
+        for i, lab in enumerate(step_labels):
+            s = STEPS[i]
+            on, skipped, past = s == name, s not in steps, steps.index(s) < steps.index(name) if s in steps else False
+            lab.configure(fg='white' if on else '#3d3c58' if skipped else '#30d158' if past else '#8f8eb0',
+                          bg='#1c1b30' if on else SIDE,
+                          font=(FONT, 11, 'bold' if on else 'normal'),
+                          text='   %s   %s' % ('✓' if past else str(i + 1), s))
+        back_btn.state(['disabled'] if name in ('Welcome', 'Done') or work['busy'] else ['!disabled'])
+        next_btn.configure(text='Close' if name == 'Done' else 'Next →')
+        next_btn.state(['disabled'] if name == 'Set up' else ['!disabled'])
+        if name == 'Set up':
+            prepare_setup_page()
 
     def data():
         keep = ('password', 'wifi_password', 'web_password', 'wifi_ssid')     # never trim these
-        d = {k: (var.get() if k in keep else var.get().strip()) for k, var in v.items()}
+        d = {k: (x.get() if k in keep else x.get().strip()) for k, x in v.items()}
         d['kindlehub_helper'] = bool(helper_on.get())
         return d
 
-    def check(validator):
-        d = data()
-        errs = validator(d)
+    def problems(name):
+        """What's wrong on this step, in plain words (checked before moving on)."""
+        d, errs = data(), []
+        m = mode.get()
+        if name == 'Wi-Fi':
+            if not d.get('wifi_ssid'):
+                errs.append('Type the Wi-Fi name.')
+            elif len(d['wifi_ssid'].encode('utf-8')) > 32:
+                errs.append('That Wi-Fi name is too long (32 bytes at most).')
+            pw = d.get('wifi_password', '')
+            if pw and not (8 <= len(pw) <= 63 or re.match(r'^[0-9a-fA-F]{64}$', pw)):
+                errs.append('A Wi-Fi password has 8 to 63 characters (or leave it empty for an open network).')
+        if name == 'Kevin':
+            if not d.get('gemini_api_key'):
+                errs.append('Paste your Gemini API key ("Get a free key" opens the page).')
+            if not d.get('wake_phrase'):
+                errs.append('Choose a wake phrase, like "hey kevin".')
+        if name == 'Logins':
+            full = dict(d, wifi_ssid=d.get('wifi_ssid') or 'x')
+            for e in (validate_ssh(full) if m == 'ssh' else validate_card(full)):
+                if not e.startswith(('Gemini', 'Wi-Fi')):
+                    errs.append(e)
+            if m == 'ssh' and not d.get('ssh_host'):
+                errs.append('Type the Pi\'s address.')
+        return errs
+
+    def go_next():
+        steps = wanted_steps()
+        name = steps[cur['i']]
+        if name == 'Done':
+            root.destroy()
+            return
+        errs = problems(name)
         if errs:
-            messagebox.showerror('Kevin Setup', 'Please fix:\n\n- ' + '\n- '.join(errs))
-            return None
-        return d
+            messagebox.showerror('Kevin Setup', '\n'.join(errs))
+            return
+        if name == 'Logins':
+            save_answers(data())
+        cur['i'] = min(cur['i'] + 1, len(steps) - 1)
+        show(steps[cur['i']])
 
-    ttk.Label(p3, text='A. New Pi: write the microSD card', font=('Segoe UI', 11, 'bold')).pack(anchor='w')
-    ttk.Label(p3, text='Put the card in this PC (a USB card reader is fine) and choose it. Kevin Setup downloads Raspberry '
-                       'Pi OS Lite (64-bit) from raspberrypi.com (about 550 MB), writes it, checks it and adds your '
-                       'settings. Everything on the card is erased.', wraplength=600).pack(anchor='w')
-    card = tk.StringVar()
-    cards = {}
-    row = ttk.Frame(p3)
-    row.pack(fill='x', pady=4)
-    cd = ttk.Combobox(row, textvariable=card, state='readonly', width=44)
-    cd.pack(side='left')
-    flash_btn = ttk.Button(row, text='Write card')
-    prow = ttk.Frame(p3)
-    prow.pack(fill='x')
-    bar = ttk.Progressbar(prow, maximum=1000)
-    bar.pack(side='left', fill='x', expand=True)
-    cancel_btn = ttk.Button(prow, text='Cancel', state='disabled')
-    cancel_btn.pack(side='left', padx=6)
-    status = tk.StringVar()
-    ttk.Label(p3, textvariable=status, foreground='#555').pack(anchor='w')
-    stop = threading.Event()
+    def go_back():
+        if work['busy']:
+            return
+        steps = wanted_steps()
+        name = steps[cur['i']]
+        cur['i'] = max(0, steps.index(name) - 1)
+        show(steps[cur['i']])
+    next_btn.configure(command=go_next)
+    back_btn.configure(command=go_back)
 
-    def refresh_cards():
-        cards.clear()
-        try:
-            for dsk in flasher.choose_disks(flasher.list_disks()):
-                cards[flasher.describe(dsk)] = dsk
-        except Exception as e:
-            out('Could not list the cards: %s' % e)
-        cd['values'] = list(cards)
-        card.set(next(iter(cards), ''))
-        if not cards and os.name == 'nt':
-            out('No microSD card found. Put one in (or plug in the card reader), then press Refresh.')
+    # -- the Set up step --
+    STAGES = {'card': ['Download Raspberry Pi OS', 'Write the card', 'Check the card', 'Add your settings', 'Eject'],
+              'imager': ['Add your settings'],
+              'ssh': ['Connect to the Pi', 'Install Kevin (10-20 minutes)']}
+    stage_rows = []
 
-    def progress(stage, done, total):
-        ui['progress'] = (stage, done, total)
+    def draw_stages():
+        for w in stage_rows:
+            w.destroy()
+        stage_rows.clear()
+        names = STAGES[mode.get()]
+        for n in names:
+            done_ = work['stage'] is not None and names.index(n) < work['stage']
+            now_ = work['stage'] is not None and names.index(n) == work['stage']
+            lab = ttk.Label(stage_box, text='%s  %s' % ('✓' if done_ else '›' if now_ else '·', n),
+                            font=(FONT, 10, 'bold' if now_ else 'normal'), foreground=GOOD if done_ else INK if now_ else DIM)
+            lab.pack(anchor='w', pady=1)
+            stage_rows.append(lab)
+
+    def stage(i):
+        work['stage'] = i
+        root.after(0, draw_stages)
+
+    def refresh_choices():
+        m = mode.get()
+        if m == 'card':
+            disks.clear()
+            try:
+                for dsk in flasher.choose_disks(flasher.list_disks()):
+                    disks[flasher.describe(dsk)] = dsk
+            except Exception as e:
+                out('Could not list the cards: %s' % e)
+            vals = list(disks)
+        else:
+            drives.clear()
+            for r, label in boot_drives(False):
+                drives['%s  %s' % (r, label or 'bootfs')] = r
+            vals = list(drives)
+        chooser['values'] = vals
+        choice.set(vals[0] if vals else '')
+        if not vals:
+            status.set('No card found. Put the microSD card in (or plug in the card reader), then press Refresh.')
+        else:
+            status.set('')
+
+    def prepare_setup_page():
+        m = mode.get()
+        work['stage'] = None
+        draw_stages()
+        if m == 'ssh':
+            lead.configure(text='Kevin will be installed on %s over your network. Keep this window open until it finishes.' % v['ssh_host'].get())
+            pick.pack_forget()
+            go_btn.configure(text='Install Kevin')
+        else:
+            lead.configure(text=('Choose the microSD card. Everything on it will be erased, then Raspberry Pi OS (about 550 MB) is '
+                                 'downloaded, written and checked, and your settings are added.' if m == 'card' else
+                                 'Choose the card\'s "bootfs" drive. Your settings are added; nothing else changes.'))
+            pick.pack(fill='x', before=go_btn)
+            go_btn.configure(text='Write the card' if m == 'card' else 'Add the settings')
+            refresh_choices()
+    refresh_btn.configure(command=refresh_choices)
+
+    def busy(on):
+        work['busy'] = on
+        go_btn.state(['disabled'] if on else ['!disabled'])
+        refresh_btn.state(['disabled'] if on else ['!disabled'])
+        cancel_btn.state(['!disabled'] if on and mode.get() == 'card' else ['disabled'])
+        back_btn.state(['disabled'] if on else ['!disabled'])
+        if not on:
+            work['progress'] = None
 
     def confirm_erase(desc):
         top = tk.Toplevel(root)
         top.title('Erase this card?')
         top.transient(root)
         top.grab_set()
+        top.configure(bg=PANEL)
         ttk.Label(top, text='Everything on this card will be erased:\n\n%s\n\nType ERASE to continue.' % desc,
-                  padding=14, wraplength=440).pack()
+                  padding=16, wraplength=440).pack()
         typed = tk.StringVar()
         ent = ttk.Entry(top, textvariable=typed)
-        ent.pack(padx=14, fill='x')
+        ent.pack(padx=16, fill='x')
         ent.focus_set()
         res = {}
 
@@ -523,163 +1007,190 @@ def gui():
                 top.destroy()
             else:
                 messagebox.showerror('Kevin Setup', 'Type ERASE to erase the card, or press Cancel.', parent=top)
-        btns = ttk.Frame(top, padding=14)
+        btns = ttk.Frame(top, padding=16, style='Card.TFrame')
         btns.pack()
-        ttk.Button(btns, text='Erase and write', command=ok).pack(side='left', padx=4)
+        ttk.Button(btns, text='Erase and write', style='Accent.TButton', command=ok).pack(side='left', padx=4)
         ttk.Button(btns, text='Cancel', command=top.destroy).pack(side='left', padx=4)
         ent.bind('<Return>', ok)
         root.wait_window(top)
         return res.get('ok', False)
 
-    def busy(on):
-        for b in (flash_btn, card_btn, ssh_btn):
-            b.state(['disabled'] if on else ['!disabled'])
-        cancel_btn.state(['!disabled'] if on else ['disabled'])
-        if not on:
-            ui['progress'] = None
+    def finished(d, where):
+        """Move to Done and wait for Kevin to answer on the network."""
+        host = where
+        names = STAGES[mode.get()]
+        work['stage'] = len(names)
+        steps = wanted_steps()
+        cur['i'] = steps.index('Done')
+        show('Done')
+        first = mode.get() != 'ssh'
+        done_lead.configure(text=(
+            'Put the card in the Pi, plug in the USB speakerphone, and switch it on. The first start takes 10-20 minutes: '
+            'it joins your Wi-Fi, updates and installs Kevin by itself. A rising three-note chime means he is ready.'
+            if first else 'Kevin is installed.'))
+        wait_say.configure(text='Waiting for Kevin to come online…', foreground=DIM)
+        wait_bar.start(12)
+        tips.configure(text='Then say "%s". Try: "what\'s the weather", "set a timer for 5 minutes", "play Radio Paradise".'
+                            % d.get('wake_phrase', 'hey kevin'))
+        url = 'http://%s:8080' % host
+        open_btn.configure(command=lambda: webbrowser.open(url))
+        app_btn.configure(command=lambda: webbrowser.open(url + '/app'))
+        started = __import__('time').time()
 
-    def do_flash():
-        d = check(validate_card)
-        if not d:
-            return
-        disk = cards.get(card.get())
-        if not disk:
-            messagebox.showerror('Kevin Setup', 'Choose the microSD card (press Refresh after putting it in).')
-            return
-        if not flasher.is_admin():
-            messagebox.showerror('Kevin Setup', 'Writing a card needs administrator rights: close Kevin Setup, right-click it '
-                                              'and choose "Run as administrator".')
-            return
-        if not confirm_erase(flasher.describe(disk)):
-            return
-        stop.clear()
-        busy(True)
+        def poll():
+            if not root.winfo_exists():
+                return
+            in_background(lambda: kevin_answers(host), lambda ok: ready() if ok else again())
 
-        def work():
-            try:
-                out('Looking up the newest Raspberry Pi OS Lite (64-bit)...')
-                img = flasher.latest_os()
-                out('Using %s (released %s).' % (img['url'].rsplit('/', 1)[-1], img.get('release_date') or '?'))
-                if int(disk['Size']) < int(img['extract_size']):
-                    raise IOError('the card is too small for the image')
-                out('Clearing the card...')
-                flasher.clear_disk(disk)
-                out('Downloading and writing (10-20 minutes)...')
-                target = flasher.DiskTarget(disk['Number'])
+        def again():
+            mins = (__import__('time').time() - started) / 60
+            if mins > 40:
+                wait_bar.stop()
+                wait_say.configure(text='Kevin has not appeared yet. Is the Pi on, with a green light flickering? '
+                                        'Try %s in a browser, or the Pi\'s address from your router.' % url, foreground=BAD)
+                return
+            wait_say.configure(text='Waiting for Kevin to come online… (%d min)' % mins)
+            root.after(15000, poll)
+
+        def ready():
+            wait_bar.stop()
+            wait_bar.pack_forget()
+            wait_say.configure(text='✓ Kevin is online at %s' % url, foreground=GOOD)
+            open_btn.state(['!disabled'])
+            app_btn.state(['!disabled'])
+        root.after(20000 if first else 2000, poll)
+
+    def start():
+        d = data()
+        m = mode.get()
+        if m == 'card':
+            disk = disks.get(choice.get())
+            if not disk:
+                messagebox.showerror('Kevin Setup', 'Choose the microSD card (press Refresh after putting it in).')
+                return
+            if not flasher.is_admin():
+                messagebox.showerror('Kevin Setup', 'Writing a card needs administrator rights: close Kevin Setup, right-click it '
+                                                  'and choose "Run as administrator". Your answers are remembered.')
+                return
+            if not confirm_erase(flasher.describe(disk)):
+                return
+            stop.clear()
+            busy(True)
+
+            def job():
                 try:
-                    flasher.write_image(flasher.http_opener(img['url']), target, int(img['extract_size']),
-                                        img['extract_sha256'], progress, stop.is_set)
+                    stage(0)
+                    out('Looking up the newest Raspberry Pi OS Lite (64-bit)...')
+                    img = flasher.latest_os()
+                    out('Using %s (released %s).' % (img['url'].rsplit('/', 1)[-1], img.get('release_date') or '?'))
+                    if int(disk['Size']) < int(img['extract_size']):
+                        raise IOError('the card is too small for the image')
+                    flasher.clear_disk(disk)
+                    target = flasher.DiskTarget(disk['Number'])
+
+                    def progress(kind, done, total):
+                        stage(1 if kind == 'write' else 2)
+                        work['progress'] = (kind, done, total)
+                    try:
+                        flasher.write_image(flasher.http_opener(img['url']), target, int(img['extract_size']),
+                                            img['extract_sha256'], progress, stop.is_set)
+                    finally:
+                        target.close()
+                    work['progress'] = None
+                    stage(3)
+                    boot = flasher.boot_drive_of(disk['Number'])
+                    for line in prepare_card(boot, d):
+                        out(line)
+                    stage(4)
+                    ejected = flasher.eject(boot)
+                    out('Ejected.' if ejected else 'Use "Eject" on the bootfs drive in File Explorer before taking the card out.')
+                    root.after(0, lambda: finished(d, d['hostname'] + '.local'))
+                except flasher.Cancelled:
+                    out('Stopped. The card is blank now: write it again before using it.')
+                    root.after(0, lambda: status.set('Stopped. Write the card again before using it.'))
+                except Exception as e:
+                    out('Could not write the card: %s' % e)
+                    root.after(0, lambda e=e: messagebox.showerror('Kevin Setup', 'Could not write the card:\n\n%s' % e))
                 finally:
-                    target.close()
-                out('Written and checked. Adding your settings...')
-                boot = flasher.boot_drive_of(disk['Number'])
-                for line in prepare_card(boot, d):
+                    root.after(0, lambda: busy(False))
+            threading.Thread(target=job, daemon=True).start()
+        elif m == 'imager':
+            r = drives.get(choice.get())
+            if not r or not is_boot_partition(r):
+                messagebox.showerror('Kevin Setup', 'Choose the card\'s bootfs drive (press Refresh if you swapped cards).')
+                return
+            try:
+                stage(0)
+                for line in prepare_card(r, d):
                     out(line)
-                ejected = flasher.eject(boot)
-                out('\nDone. ' + ('The card was ejected: you can take it out.' if ejected else
-                                  'In File Explorer, use "Eject" on the bootfs drive before taking the card out.'))
-                out('Put it in the Pi with the USB speakerphone plugged in, and switch on.')
-                out('Give it 10-20 minutes the first time; a rising three-note chime means Kevin is ready. Then say "%s".' % d['wake_phrase'])
-                out('Settings: http://%s.local:8080 (or the Pi\'s IP address from your router).' % d['hostname'])
-            except flasher.Cancelled:
-                out('Stopped. The card is blank now: write it again before using it.')
+                out('Use "Eject" on the bootfs drive in File Explorer before taking the card out.')
+                finished(d, d['hostname'] + '.local')
             except Exception as e:
-                out('Could not write the card: %s' % e)
-            finally:
-                root.after(0, lambda: busy(False))
-        threading.Thread(target=work, daemon=True).start()
-    ttk.Button(row, text='Refresh', command=refresh_cards).pack(side='left', padx=6)
-    flash_btn.pack(side='left')
-    flash_btn.configure(command=do_flash)
+                messagebox.showerror('Kevin Setup', 'Could not write the settings:\n\n%s' % e)
+        else:
+            host = d.get('ssh_host') or 'kevin.local'
+            busy(True)
+
+            def confirm_key(fp):
+                ans, ev = {}, threading.Event()
+
+                def ask():
+                    ans['ok'] = messagebox.askyesno('Kevin Setup', 'First time connecting to this Pi.\nIts key is:\n\n%s\n\nConnect?' % fp)
+                    ev.set()
+                root.after(0, ask)
+                ev.wait()
+                return ans.get('ok', False)
+
+            def job():
+                try:
+                    stage(0)
+                    progress_lines = {'n': 0}
+
+                    def line(t):
+                        progress_lines['n'] += 1
+                        if progress_lines['n'] == 2:
+                            stage(1)
+                        out(t)
+                        root.after(0, lambda: status.set(t[:110]))
+                    code = install_over_ssh(host, d['username'], d['password'], d, line, confirm_key)
+                    if code == 0:
+                        root.after(0, lambda: finished(d, host))
+                    else:
+                        root.after(0, lambda code=code: messagebox.showerror('Kevin Setup', 'The installer stopped (code %s). '
+                                                                   'Tick "Show details" to see why.' % code))
+                except Exception as e:
+                    root.after(0, lambda e=e: messagebox.showerror('Kevin Setup', 'Could not install:\n\n%s' % e))
+                finally:
+                    root.after(0, lambda: busy(False))
+            threading.Thread(target=job, daemon=True).start()
+    go_btn.configure(command=start)
     cancel_btn.configure(command=stop.set)
 
-    ttk.Label(p3, text='Already flashed it with Raspberry Pi Imager (no customisation)? Choose its bootfs drive:',
-              wraplength=600).pack(anchor='w', pady=(10, 0))
-    drive = tk.StringVar()
-    drives = {}
-    row = ttk.Frame(p3)
-    row.pack(fill='x', pady=4)
-    dd = ttk.Combobox(row, textvariable=drive, state='readonly', width=22)
-    dd.pack(side='left')
-    show_all = tk.BooleanVar(value=False)
-
-    def refresh():
-        drives.clear()
-        for r, label in boot_drives(show_all.get()):
-            drives['%s  %s' % (r, label or '')] = r
-        dd['values'] = list(drives)
-        drive.set(next(iter(drives), ''))
-    ttk.Button(row, text='Refresh', command=refresh).pack(side='left', padx=6)
-    card_btn = ttk.Button(row, text='Save settings only')
-    card_btn.pack(side='left')
-    ttk.Checkbutton(row, text='Show non-removable drives', variable=show_all, command=refresh).pack(side='left', padx=6)
-
-    def do_card():
-        d = check(validate_card)
-        if not d:
-            return
-        r = drives.get(drive.get())
-        if not r or not is_boot_partition(r):
-            messagebox.showerror('Kevin Setup', 'Pick the SD card\'s boot drive (press Refresh if you swapped cards).')
-            return
-        card_btn.state(['disabled'])
+    def pump():
         try:
-            for line in prepare_card(r, d):
-                out(line)
-            out('\nDone. In Windows, use "Eject" on the bootfs drive before unplugging the card.')
-            out('Put it in the Pi with the USB speakerphone plugged in, and switch on.')
-            out('Give it 10-20 minutes the first time; a rising three-note chime means Kevin is ready. Then say "%s".' % d['wake_phrase'])
-            out('Settings: http://%s.local:8080 (or the Pi\'s IP address from your router).' % d['hostname'])
-        except Exception as e:
-            messagebox.showerror('Kevin Setup', 'Could not write the card: %s' % e)
-        finally:
-            card_btn.state(['!disabled'])
-    card_btn.configure(command=do_card)
+            while True:
+                log.insert('end', lines.get_nowait() + '\n')
+                log.see('end')
+        except queue.Empty:
+            pass
+        pr = work['progress']
+        if pr:
+            kind, done_b, total = pr
+            bar['value'] = 1000 * done_b / max(total, 1)
+            status.set('%s  %.1f of %.1f GB' % ('Writing' if kind == 'write' else 'Checking', done_b / 1e9, total / 1e9))
+        elif work['busy'] and mode.get() != 'ssh':
+            bar['value'] = 0
+        root.after(150, pump)
 
-    ttk.Separator(p3).pack(fill='x', pady=10)
-    ttk.Label(p3, text='B. Pi already running: install over the network', font=('Segoe UI', 11, 'bold')).pack(anchor='w')
-    host = tk.StringVar(value='kevin.local')
-    hrow = ttk.Frame(p3)
-    hrow.pack(fill='x', pady=4)
-    ttk.Label(hrow, text='Pi address').pack(side='left')
-    ttk.Entry(hrow, textvariable=host, width=22).pack(side='left', padx=6)
-    ssh_btn = ttk.Button(hrow, text='Install')
-    ssh_btn.pack(side='left')
-
-    def confirm_key(fp):
-        """Asked from the worker thread; answered on the window's thread."""
-        ans, ev = {}, threading.Event()
-
-        def ask():
-            ans['ok'] = messagebox.askyesno('Kevin Setup', 'First time connecting to this Pi.\nIts key is:\n\n%s\n\nConnect?' % fp)
-            ev.set()
-        root.after(0, ask)
-        ev.wait()
-        return ans.get('ok', False)
-
-    def do_ssh():
-        d = check(validate_ssh)
-        if not d:
+    def closing():
+        if work['busy'] and not messagebox.askyesno('Kevin Setup', 'Setup is still running. Stop it and close?'):
             return
-        ssh_btn.state(['disabled'])
-
-        def work():
-            try:
-                code = install_over_ssh(host.get().strip(), d['username'], d['password'], d, out, confirm_key)
-                if code == 0:
-                    out('\nBob is installed. Say "%s". Settings: http://%s:8080' % (d['wake_phrase'], host.get().strip()))
-                else:
-                    out('\nThe installer stopped (code %s). The lines above say why.' % code)
-            except Exception as e:
-                out('Could not install: %s' % e)
-            finally:
-                root.after(0, lambda: ssh_btn.state(['!disabled']))
-        threading.Thread(target=work, daemon=True).start()
-    ssh_btn.configure(command=do_ssh)
-    log.pack(fill='both', expand=True, pady=(10, 0))
-    refresh()
-    refresh_cards()
+        stop.set()
+        root.destroy()
+    root.protocol('WM_DELETE_WINDOW', closing)
+    show('Welcome')
     pump()
+    animate()
     root.mainloop()
 
 

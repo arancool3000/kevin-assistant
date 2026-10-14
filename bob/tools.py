@@ -8,12 +8,11 @@ import os
 import shutil
 import socket
 import subprocess
-import threading
 import time
 import urllib.parse
 import urllib.request
 
-from . import audio, config, skills
+from . import audio, config, experts, knowledge, music, skills, timers
 
 NOTES = os.path.join(config.STATE, 'notes.json')
 WEATHER_CODES = {0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast', 45: 'fog', 48: 'fog',
@@ -29,10 +28,29 @@ DECLARATIONS = [
     {'name': 'get_time', 'description': 'The current local date and time.', 'parameters': OBJ()},
     {'name': 'get_weather', 'description': 'Weather now and today (and tomorrow) for the town in settings, or another place.',
      'parameters': OBJ({'place': S('optional: another town or city')})},
-    {'name': 'set_timer', 'description': 'Start a timer. When it ends, a chime plays.',
-     'parameters': OBJ({'minutes': N('minutes'), 'seconds': N('seconds'), 'name': S('optional name, e.g. pasta')})},
-    {'name': 'list_timers', 'description': 'Timers running now and the time left on each.', 'parameters': OBJ()},
-    {'name': 'cancel_timer', 'description': 'Cancel a timer by name, or all of them.', 'parameters': OBJ({'name': S('name, or "all"')})},
+    {'name': 'set_timer', 'description': 'Start a countdown timer (several can run at once). When it ends it rings until stopped.',
+     'parameters': OBJ({'hours': N('hours'), 'minutes': N('minutes'), 'seconds': N('seconds'), 'name': S('optional name, e.g. pasta')})},
+    {'name': 'set_alarm', 'description': 'An alarm at a time of day (the next time that time comes round), e.g. to wake up. '
+     'It rings, getting louder, until stopped.', 'parameters': OBJ({'time': S('e.g. 7:30, 6 pm, 19:05'), 'name': S('optional label')}, ['time'])},
+    {'name': 'list_timers', 'description': 'Timers and alarms: time left, when each is due, and whether one is ringing.', 'parameters': OBJ()},
+    {'name': 'stop_timer', 'description': 'Stop a ringing timer or alarm, or cancel one before it rings ("stop", "cancel the pasta timer", "cancel all").',
+     'parameters': OBJ({'which': S('a name, "alarm", "all", or leave empty for the ringing one')})},
+    {'name': 'change_timer', 'description': 'Pause, resume, add or take off time, or snooze (default 9 minutes) a timer or alarm.',
+     'parameters': OBJ({'which': S('a name, or empty for the ringing/only one'), 'action': S('pause, resume, add, subtract or snooze'),
+                        'minutes': N('for add/subtract/snooze')}, ['action'])},
+    {'name': 'play_radio', 'description': 'Play an internet radio station by name (any station in the world, e.g. BBC Radio 2, Jazz FM, Radio Paradise).',
+     'parameters': OBJ({'station': S('the station name')}, ['station'])},
+    {'name': 'play_music', 'description': 'Play songs from the music folder on the Pi: a song, artist or album name, or empty to shuffle everything.',
+     'parameters': OBJ({'query': S('what to play, or empty to shuffle')})},
+    {'name': 'music_control', 'description': 'Control the music or radio: stop, pause, resume, next, louder, quieter, or volume (0-100).',
+     'parameters': OBJ({'action': S('stop, pause, resume, next, louder, quieter or volume'), 'volume': N('0-100, for volume')}, ['action'])},
+    {'name': 'now_playing', 'description': 'What music or radio is playing now (song title when the station sends it).', 'parameters': OBJ()},
+    {'name': 'quiet_hours', 'description': 'Quiet hours (softer chimes, dim bedside screen; alarms still ring): read them, or change them.',
+     'parameters': OBJ({'start_hour': N('0-23'), 'end_hour': N('0-23'), 'enabled': {'type': 'BOOLEAN', 'description': 'on or off'}})},
+    {'name': 'ask_expert', 'description': 'Hand a hard question to the user\'s own Claude or ChatGPT account (only if connected on '
+     'the settings page): careful maths, code, planning, a long or tricky explanation. Slow (up to a minute or two): say '
+     '"let me think about that" first. Not for everyday questions.',
+     'parameters': OBJ({'question': S('the full question, with any details the user gave'), 'which': S('claude, chatgpt, or empty for either')}, ['question'])},
     {'name': 'remember', 'description': 'Remember a fact the user tells you, for later conversations.',
      'parameters': OBJ({'fact': S('the fact, in a short sentence')}, ['fact'])},
     {'name': 'recall', 'description': 'What you have been asked to remember (optionally about one topic).',
@@ -44,44 +62,7 @@ DECLARATIONS = [
     {'name': 'gpio_guide', 'description': 'Which GPIO pins are free to wire things to and how (BCM numbers), to help the user wire hardware for a new skill.',
      'parameters': OBJ()},
     {'name': 'end_conversation', 'description': 'Go back to sleep (the user said bye, thanks, that is all).', 'parameters': OBJ()},
-] + skills.DECLARATIONS
-
-
-class Timers:
-    def __init__(self, ring):
-        self.ring, self.items, self.lock = ring, {}, threading.Lock()
-
-    def add(self, secs, name):
-        nm = name or 'timer %d' % (len(self.items) + 1)
-        due = time.time() + secs
-        with self.lock:
-            self.items[nm] = due
-        threading.Thread(target=self._wait, args=(nm, due), daemon=True).start()
-        return nm, due
-
-    def _wait(self, nm, due):
-        time.sleep(max(0, due - time.time()))
-        with self.lock:
-            if self.items.get(nm) != due:
-                return
-            del self.items[nm]
-        self.ring(nm)
-
-    def view(self):
-        now = time.time()
-        with self.lock:
-            return [{'name': n, 'seconds_left': round(d - now)} for n, d in sorted(self.items.items(), key=lambda kv: kv[1])]
-
-    def cancel(self, name):
-        with self.lock:
-            if not name or name == 'all':
-                n = len(self.items)
-                self.items.clear()
-                return n
-            hit = [k for k in self.items if name.lower() in k.lower()]
-            for k in hit:
-                del self.items[k]
-            return len(hit)
+] + knowledge.DECLARATIONS + skills.DECLARATIONS
 
 
 def _notes():
@@ -115,7 +96,7 @@ def weather(lat, lon, tz='auto'):
     with urllib.request.urlopen('https://api.open-meteo.com/v1/forecast?' + q, timeout=10) as r:
         d = json.load(r)
     c, day = d['current'], d['daily']
-    return {'now': {'temp_c': c['temperature_2m'], 'feels_like_c': c['apparent_temperature'],
+    return {'now': {'temp_c': c['temperature_2m'], 'feels_like_c': c['apparent_temperature'], 'code': c['weather_code'],
                     'sky': WEATHER_CODES.get(c['weather_code'], 'unknown'), 'wind_kmh': c['wind_speed_10m'],
                     'humidity_pct': c['relative_humidity_2m']},
             'today': {'high_c': day['temperature_2m_max'][0], 'low_c': day['temperature_2m_min'][0],
@@ -180,10 +161,9 @@ GPIO_GUIDE = {
 }
 
 
-class Tools:
-    def __init__(self, cfg, ring=None):
+class Tools(knowledge.KnowledgeTools):
+    def __init__(self, cfg, ring=None):      # ring: kept for old callers; timers.Ringer rings now
         self.cfg = cfg
-        self.timers = Timers(ring or (lambda name: None))
         self.ended = False
 
     def declarations(self):
@@ -222,18 +202,71 @@ class Tools:
             return {'error': 'no town set: say which town, or set it on the web page'}
         return dict(weather(lat, lon, tz), place=label)
 
-    def t_set_timer(self, minutes=None, seconds=None, name=None):
-        secs = float(minutes or 0) * 60 + float(seconds or 0)
+    def t_set_timer(self, hours=None, minutes=None, seconds=None, name=None):
+        secs = float(hours or 0) * 3600 + float(minutes or 0) * 60 + float(seconds or 0)
         if secs <= 0:
             return {'error': 'how long?'}
-        nm, due = self.timers.add(secs, name)
-        return {'ok': True, 'name': nm, 'ends_at': time.strftime('%H:%M:%S', time.localtime(due))}
+        t = timers.add_timer(secs, name)
+        return {'ok': True, 'name': t['name'], 'rings_in': timers.say_left(secs),
+                'rings_at': time.strftime('%H:%M', time.localtime(t['due']))}
+
+    def t_set_alarm(self, time=None, name=None):
+        t = timers.add_alarm(time, name)
+        import time as _t
+        return {'ok': True, 'name': t['name'], 'rings_at': _t.strftime('%A %H:%M', _t.localtime(t['due'])),
+                'in': timers.say_left(t['total'])}
 
     def t_list_timers(self):
-        return {'timers': self.timers.view()}
+        items = timers.view()
+        return {'items': [dict(i, left=timers.say_left(i['left_s'])) for i in items]} if items else {'items': [], 'say': 'none set'}
 
-    def t_cancel_timer(self, name='all'):
-        return {'cancelled': self.timers.cancel(name)}
+    def t_stop_timer(self, which=''):
+        names = timers.change(which or 'ringing', 'cancel')
+        return {'stopped': names} if names else {'error': 'no timer or alarm by that name'}
+
+    def t_change_timer(self, action, which='', minutes=None):
+        how = {'pause': 'pause', 'resume': 'resume', 'add': 'add', 'subtract': 'add', 'snooze': 'snooze'}.get(str(action).lower())
+        if not how:
+            return {'error': 'pause, resume, add, subtract or snooze'}
+        secs = float(minutes or (9 if how == 'snooze' else 1)) * 60
+        names = timers.change(which or 'ringing', how, -secs if action == 'subtract' else secs)
+        return {'changed': names, 'action': action} if names else {'error': 'no timer or alarm by that name'}
+
+    def t_play_radio(self, station):
+        return music.play_radio(station, int(self.cfg.get('music_volume', 60)))
+
+    def t_play_music(self, query=''):
+        return music.play_music(self.cfg.get('music_dir') or config.DEFAULTS['music_dir'], query, int(self.cfg.get('music_volume', 60)))
+
+    def t_music_control(self, action, volume=None):
+        r = music.control(action, volume)
+        if action == 'volume' and volume is not None and not r.get('error'):
+            self._save_setting('music_volume', int(max(0, min(100, float(volume)))))
+        return r
+
+    def t_now_playing(self):
+        return music.now_playing()
+
+    def t_quiet_hours(self, start_hour=None, end_hour=None, enabled=None):
+        for key, val in (('quiet_from', start_hour), ('quiet_to', end_hour)):
+            if val is not None:
+                self._save_setting(key, int(val) % 24)
+        if enabled is not None:
+            self._save_setting('quiet_enabled', bool(enabled))
+        return {'from': self.cfg.get('quiet_from', 22), 'to': self.cfg.get('quiet_to', 7),
+                'enabled': self.cfg.get('quiet_enabled', True), 'quiet_now': config.is_quiet(self.cfg)}
+
+    def _save_setting(self, key, val):
+        self.cfg[key] = val
+        try:
+            c = config.load()
+            c[key] = val
+            config.save(c)
+        except OSError:
+            pass
+
+    def t_ask_expert(self, question, which=''):
+        return experts.ask(question, which or 'auto')
 
     def t_remember(self, fact):
         n = _notes()

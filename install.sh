@@ -48,7 +48,7 @@ newest_release() {   # the same rule the updater uses: vX.Y.Z only, highest vers
 
 say "System packages"
 $APT update
-$APT install -y git python3-venv python3-pip alsa-utils unzip curl avahi-daemon \
+$APT install -y git python3-venv python3-pip alsa-utils unzip curl avahi-daemon mpv \
   python3-gpiozero python3-lgpio python3-serial python3-smbus2 i2c-tools stockfish >/dev/null
 systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
 if command -v raspi-config >/dev/null; then                 # I2C and SPI on, for sensors (applies after a reboot)
@@ -61,6 +61,7 @@ id "$USER_NAME" >/dev/null 2>&1 || useradd --system --home-dir "$STATE" --shell 
 id "$SKILL_USER" >/dev/null 2>&1 || useradd --system --home-dir "$SKILL_DATA" --shell /usr/sbin/nologin "$SKILL_USER"
 id "$HELPER_USER" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$HELPER_USER"
 getent group audio >/dev/null && usermod -aG audio "$USER_NAME"
+getent group dialout >/dev/null && usermod -aG dialout "$USER_NAME"     # the bedside screen (a USB Nano)
 for g in gpio i2c spi dialout video; do getent group "$g" >/dev/null && usermod -aG "$g" "$SKILL_USER"; done
 usermod -aG "$SKILL_USER" "$USER_NAME"                       # Kevin may talk to the skill host's socket
 
@@ -92,6 +93,7 @@ say "Python environment"
 
 say "Folders"
 install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$STATE" "$ETC"
+install -d -m 755 -o "$USER_NAME" -g "$USER_NAME" "$STATE/music"         # songs for "play some music" (copy them here)
 install -d -m 2750 -o "$USER_NAME" -g "$SKILL_USER" "$SKILLS"          # Kevin writes skills, the host reads them
 install -d -m 750 -o "$SKILL_USER" -g "$SKILL_USER" "$SKILL_DATA"
 install -d -m 755 -o root -g root "$UPD"                                # the updater's own, root only
