@@ -171,16 +171,7 @@ print('settings saved')
 PYEOF
 TZ_NAME=$(runuser -u "$USER_NAME" -- "$HOME_DIR/venv/bin/python" -c "import json;print(json.load(open('$ETC/config.json')).get('timezone') or '')" 2>/dev/null || true)
 if [ -n "$TZ_NAME" ] && [ -e "/usr/share/zoneinfo/$TZ_NAME" ]; then timedatectl set-timezone "$TZ_NAME" || true; fi
-HAS_PW=$(runuser -u "$USER_NAME" -- "$HOME_DIR/venv/bin/python" -c "import json;print('yes' if json.load(open('$ETC/secrets.json')).get('web_password') else 'no')" 2>/dev/null || echo no)
-SETUP_CODE=""
-if [ "$HAS_PW" != "yes" ]; then                             # the settings page asks for this before the first password
-  if [ -f "$ETC/setup-code" ]; then
-    SETUP_CODE=$(cat "$ETC/setup-code")                      # keep the code already shown
-  else
-    SETUP_CODE=$(tr -dc 'A-HJ-NP-Z2-9' </dev/urandom | head -c 8)
-    runuser -u "$USER_NAME" -- sh -c "umask 077; printf '%s\n' '$SETUP_CODE' > '$ETC/setup-code'"
-  fi
-fi
+rm -f "$ETC/setup-code"                                    # no setup code any more: the page password is optional
 
 say "Services"
 SUDOERS_TMP=$(mktemp)
@@ -220,7 +211,6 @@ say "Done"
 if [ "$UPGRADE" -eq 0 ]; then
   echo "Kevin is running. Say \"hey kevin\"."
   echo "Settings page: http://$(hostname).local:8080  (or http://$IP:8080)"
-  if [ -n "$SETUP_CODE" ]; then echo "Setup code for the settings page: $SETUP_CODE"; fi
   echo "Updates install themselves from new releases; turn that off on the settings page."
   echo "I2C and SPI are switched on: reboot once (sudo reboot) before using sensors that need them."
 fi
