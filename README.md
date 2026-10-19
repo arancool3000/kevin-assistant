@@ -28,7 +28,7 @@ on it's one of his abilities. Any one skill can be switched off or rolled back o
   night-time clock for a phone on a stand.
 - **An optional bedside screen** — a £10 Arduino Nano with a 16×2 LCD and a joystick shows the time, weather and
   timers, and its button talks to Kevin ([examples/bedside-screen](examples/bedside-screen/)).
-- **Has a settings page** — `http://kevin.local:8080`, from any phone or computer at home.
+- **Has a settings page** — `http://kevin.local:8080`, from any phone or computer at home: Bluetooth speakers, Wi-Fi, speaker and mic, voice, quiet hours.
 - **Can ask your Claude or ChatGPT** — optional: connect your own subscription for the hard questions
   ([docs/AI-ACCOUNTS.md](docs/AI-ACCOUNTS.md)).
 - **Has setup apps for Windows and Mac** — Wi-Fi, passwords and key, without typing a single command
