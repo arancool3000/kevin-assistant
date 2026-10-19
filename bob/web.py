@@ -1,8 +1,8 @@
 """The settings page (service bob-assistant-web): http://<pi-name>.local:8080 on your home network.
 
 Status, the Gemini key, wake phrase and sensitivity, voice, town, volume, the skills Kevin has made (read or
-delete them), updates. Signed in with the password chosen at setup; nothing here works from outside your
-network unless you forward the port yourself (don't).
+delete them), updates. Open to anyone on your home network unless you set the optional password (on this page or in
+the setup app); nothing here works from outside your network unless you forward the port yourself (don't).
 """
 import html
 import json
@@ -19,7 +19,7 @@ from .webapp import APP, STANDBY
 SESSIONS = {}
 SESSION_HOURS = 24 * 30
 FAILS = {}                              # client address -> recent wrong passwords: at most 10 per 10 minutes each
-SETUP_CODE_FILE = os.path.join(config.ETC, 'setup-code')
+SETUP_CODE_FILE = os.path.join(config.ETC, 'setup-code')   # old installs only: removed on start, no longer asked for
 VOSK_MODEL = os.path.join(config.STATE, 'vosk-model')
 VOICES = ['Charon', 'Puck', 'Kore', 'Fenrir', 'Aoede', 'Leda', 'Orus', 'Zephyr']
 
@@ -95,6 +95,17 @@ def _access_html(access):
     return ('<ul style="margin:6px 0 4px 18px;padding:0">%s</ul><p class="sub">%s</p>' % (
         ''.join('<li>%s%s</li>' % (esc(a), ' <span class="pill warn">check</span>' if a in risky else '') for a in access),
         esc(skills.BOUNDARY)))
+
+
+def password_card(sec):
+    """Optional: with no password anyone on the home network can open this page."""
+    if sec.get('web_password'):
+        return ('<form method="post" action="/password" class="card"><h2>Page password</h2><label>Current password</label>'
+                '<input type="password" name="current"><label>New password (leave empty to remove it)</label>'
+                '<input type="password" name="password"><p><button class="plain">Change</button></p></form>')
+    return ('<form method="post" action="/password" class="card"><h2>Page password</h2><p class="sub">Off: anyone on your home '
+            'Wi-Fi can open this page. Set one if others share your network.</p><label>New password</label>'
+            '<input type="password" name="password" minlength="6"><p><button class="plain">Set password</button></p></form>')
 
 
 def pending_cards():
@@ -187,6 +198,10 @@ class Handler(BaseHTTPRequestHandler):
         return ''
 
     def _signed_in(self):
+        # No password set = open on the home network. A setup code printed only by the installer locked out everyone who
+        # used the setup app and never saw a terminal (19 Oct 2026); the password is now optional.
+        if not config.load_secrets().get('web_password'):
+            return True
         exp = SESSIONS.get(self._cookie())
         return bool(exp and exp > time.time())
 
@@ -217,8 +232,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(421, 'unknown host')
         path = self.path.split('?')[0]
         sec = config.load_secrets()
-        if not sec.get('web_password'):
-            return self._send(200, self.first_run())
+        if path == '/login' and not sec.get('web_password'):
+            return self._redirect('/')
         if path == '/login' or not self._signed_in():
             return self._send(200, self.login())
         if path == '/skill':
@@ -269,27 +284,6 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split('?')[0]
         f = self._form()
         sec = config.load_secrets()
-        if path == '/first-run' and not sec.get('web_password'):
-            try:
-                with open(SETUP_CODE_FILE) as cf:
-                    code = cf.read().strip()
-            except OSError:
-                code = ''
-            if not code or not secrets.compare_digest(f.get('code', '').strip().upper(), code.upper()):
-                time.sleep(1)
-                return self._send(200, self.first_run('That setup code is not right. It was shown at the end of the install '
-                                                      '(and is in /etc/bob/setup-code on the Pi).'))
-            if len(f.get('password', '')) < 6:
-                return self._send(200, self.first_run('Use at least 6 characters.'))
-            sec['web_password'] = config.hash_password(f['password'])
-            if f.get('api_key', '').strip():
-                sec['gemini_api_key'] = f['api_key'].strip()
-            config.save_secrets({'gemini_api_key': sec.get('gemini_api_key', ''), 'web_password': sec['web_password']})
-            try:
-                os.remove(SETUP_CODE_FILE)
-            except OSError:
-                pass
-            return self._redirect('/login')
         if path == '/login':
             now = time.time()
             who = self.client_address[0] if self.client_address else '?'
@@ -419,23 +413,19 @@ class Handler(BaseHTTPRequestHandler):
             subprocess.Popen(['sudo', '-n', '/usr/bin/systemctl', 'start', '--no-block', 'bob-assistant-update-now.service'])
             return self._redirect('/log')
         if path == '/password':
-            if not config.check_password(f.get('current', ''), sec.get('web_password', '')):
+            had = sec.get('web_password')
+            if had and not config.check_password(f.get('current', ''), had):
                 return self._send(200, page('Kevin', '<p class="warn">Current password is not right.</p><p><a class="btn" href="/">Back</a></p>'))
-            if len(f.get('password', '')) >= 6:
-                sec['web_password'] = config.hash_password(f['password'])
-                config.save_secrets(sec)
-                SESSIONS.clear()
-            return self._redirect('/login')
+            new = f.get('password', '')
+            if new and len(new) < 6:
+                return self._send(200, page('Kevin', '<p class="warn">Use at least 6 characters (or leave it empty for no password).</p><p><a class="btn" href="/">Back</a></p>'))
+            sec['web_password'] = config.hash_password(new) if new else ''
+            config.save_secrets(sec)
+            SESSIONS.clear()
+            return self._redirect('/login' if new else '/')
         return self._send(404, 'not found')
 
     # -- views --
-    def first_run(self, err=''):
-        return page('Set up Kevin', '<h1><span class="face"><i></i><i></i></span>Set up Kevin</h1><p class="sub">Choose a password for this page%s.</p>'
-                    '<form method="post" action="/first-run" class="card"><label>Setup code (shown at the end of the install)</label><input name="code" required autocomplete="off">'
-                    '<label>Password for this page</label><input type="password" name="password" required minlength="6">'
-                    '<label>Gemini API key (from aistudio.google.com/apikey)</label><input name="api_key" autocomplete="off">'
-                    '<p class="warn">%s</p><button>Save</button></form>' % (', and add your Gemini key if setup did not', esc(err)))
-
     def login(self, err=''):
         return page('Kevin', '<h1><span class="face"><i></i><i></i></span>Kevin</h1><form method="post" action="/login" class="card">'
                     '<label>Password</label><input type="password" name="password" autofocus><p class="warn">%s</p>'
@@ -466,7 +456,7 @@ class Handler(BaseHTTPRequestHandler):
         skills_html = skills_html or '<p class="sub">None yet. Wire something to the Pi and say: "Hey Kevin, make a skill for it." A good first one: "Hey Kevin, install the example temperature skill."</p>'
         if bad:
             skills_html += ''.join('<p class="warn">%s is broken: %s</p>' % (esc(b['name']), esc(b['problem'])) for b in bad)
-        return page('Kevin', (
+        return page('Kevin', ((
             '<h1><span class="face"><i></i><i></i></span>%s</h1><p class="sub">%s · version %s</p>'
             '<p><a class="btn" href="/app">Remote</a> <a class="btn plain" href="/standby">StandBy clock</a></p>'
             '%s'
@@ -501,9 +491,7 @@ class Handler(BaseHTTPRequestHandler):
             '%s'
             '<div class="card"><h2>Updates</h2><form method="post" action="/update" style="display:inline"><button class="plain">Check now</button></form> '
             '<a class="btn plain" href="/log">Update log</a></div>'
-            '<form method="post" action="/password" class="card"><h2>Change this page\'s password</h2><label>Current password</label><input type="password" name="current">'
-            '<label>New password</label><input type="password" name="password" minlength="6">'
-            '<p><button class="plain">Change</button></p></form>') % (
+            '@@PW@@') % (
                 esc(cfg['name']), esc(pi_st.get('ip') or ''), esc(pi_st.get('version', '?')), pending_cards(),
                 'ok' if st in ('asleep', 'listening', 'speaking', 'working') else 'warn', esc(state_txt),
                 'ok' if sec.get('gemini_api_key') else 'warn', 'set' if sec.get('gemini_api_key') else 'missing',
@@ -515,7 +503,7 @@ class Handler(BaseHTTPRequestHandler):
                 esc(cfg.get('music_volume', 60)), esc(', '.join(bedside.devices()) or 'no USB serial devices'), esc(cfg.get('bedside_serial', '')),
                 'checked' if cfg.get('auto_update') else '',
                 '' if cfg.get('skill_approval') == 'page' else ' selected', ' selected' if cfg.get('skill_approval') == 'page' else '',
-                ai_card(), skills_html, helper_card()))
+                ai_card(), skills_html, helper_card())).replace('@@PW@@', password_card(sec)))
 
 
 def ai_card():

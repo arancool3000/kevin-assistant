@@ -54,8 +54,8 @@ RESERVED_USERS = {'root', 'bob-assistant', 'bob-skill', 'daemon', 'nobody'}
 def _common(d, errs):
     if not d.get('gemini_api_key', '').strip():
         errs.append('Gemini API key is empty (get one free at aistudio.google.com/apikey)')
-    if len(d.get('web_password', '')) < 6:
-        errs.append('Settings page password: at least 6 characters')
+    if d.get('web_password') and len(d['web_password']) < 6:
+        errs.append('Settings page password: at least 6 characters, or leave it empty')
 
 
 def validate_card(d):
@@ -769,7 +769,7 @@ def gui():
     r2, _w = field(p, 'Pi user name', 'username', 'pi')
     r3, _w = field(p, 'Pi password', 'password', show='•', hint='A new Pi: choose one (8+ characters). A running Pi: the one it has.')
     ttk.Button(r3, text='Make one', command=lambda: gen('password')).pack(side='left', padx=4)
-    r4, _w = field(p, 'Settings page password', 'web_password', show='•', hint='6+ characters. You sign in to Kevin\'s page with it.')
+    r4, _w = field(p, 'Settings page password', 'web_password', show='•', hint='Optional. Empty = anyone on your home Wi-Fi can open Kevin\'s page.')
     ttk.Button(r4, text='Make one', command=lambda: gen('web_password')).pack(side='left', padx=4)
     hrow, _w = field(p, 'Pi address (only for a Pi that is already running)', 'ssh_host', 'kevin.local',
                      hint='Its name with .local, or its IP address from your router.')

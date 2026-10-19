@@ -55,8 +55,8 @@ sensors (DHT22, BME280…), servos with their own power supply. See [docs/HARDWA
 
 1. Download **Kevin-Setup.exe** from the [latest release](https://github.com/arancool3000/kevin-assistant/releases/latest)
    and put the microSD card in your PC (a USB card reader is fine).
-2. Open **Kevin-Setup.exe** (allow it to make changes: it writes the card). Fill in your Wi-Fi, a Pi password,
-   your Gemini key, and a password for Kevin's settings page.
+2. Open **Kevin-Setup.exe** (allow it to make changes: it writes the card). Fill in your Wi-Fi, a Pi password
+   and your Gemini key (a password for Kevin's settings page is optional).
 3. On the last tab choose the card and press **Write card**, then type ERASE. The app downloads Raspberry Pi OS
    Lite (64-bit) from raspberrypi.com, writes and checks it, adds your settings and ejects the card
    (10–20 minutes). No Raspberry Pi Imager needed.
@@ -78,8 +78,7 @@ SSH. Then, on the Pi (over SSH):
 curl -fsSL https://raw.githubusercontent.com/arancool3000/kevin-assistant/main/install.sh | sudo bash
 ```
 
-The installer ends by printing a **setup code**. Open `http://<your-pi-name>.local:8080` (or `http://<its IP>:8080`),
-enter the code, choose a password and paste your Gemini key. Say "Hey Kevin".
+Open `http://<your-pi-name>.local:8080` (or `http://<its IP>:8080`) and paste your Gemini key. Say "Hey Kevin".
 
 ## Things to say
 
