@@ -53,6 +53,12 @@ class Mic:
             if not part:
                 return b''
             data += part
+        try:                                            # dance mode (dance.py) follows the beat in the same audio
+            from . import dance
+            if dance.enabled():
+                dance.feed(data)
+        except Exception:
+            pass
         return data
 
     def stop(self):
