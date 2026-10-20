@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import actions, audio, bedside, config, experts, helper, skills, system, tools, updater, wake
+from . import actions, audio, bedside, config, dance, dancepage, experts, helper, skills, system, tools, updater, wake
 from .webapp import APP, STANDBY
 
 SESSIONS = {}
@@ -277,6 +277,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(system.wifi_status('rescan' in self.path)), 'application/json')
         if path == '/app':
             return self._send(200, APP)
+        if path == '/dance':                          # the dance screen (dancepage.py), for a TV or the Pi's HDMI
+            return self._send(200, dancepage.page())
+        if path == '/api/dance':                      # the beat as JSON (dance.py): for your own lights, robots, screens
+            return self._send(200, json.dumps(dance.now_state()), 'application/json')
         if path == '/standby':
             return self._send(200, STANDBY)
         if path == '/log':
@@ -495,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
             '<a class="btn" href="/settings#accounts">Add the key</a></div>')
         return page('Kevin', (
             '<h1><span class="face"><i></i><i></i></span>%s</h1><p class="sub">%s · version %s</p>'
-            '<p><a class="btn" href="/settings">Settings</a> <a class="btn plain" href="/app">Remote</a> <a class="btn plain" href="/standby">StandBy clock</a></p>'
+            '<p><a class="btn" href="/settings">Settings</a> <a class="btn plain" href="/app">Remote</a> <a class="btn plain" href="/standby">StandBy clock</a> <a class="btn plain" href="/dance">Dance screen</a></p>'
             '%s%s'
             '<div class="card"><h2>Status</h2>'
             '<div class="row"><span>Kevin</span><span class="pill %s">%s</span></div>'

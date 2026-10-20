@@ -57,6 +57,9 @@ DECLARATIONS = [
      'parameters': OBJ({'about': S('optional topic')})},
     {'name': 'forget', 'description': 'Forget remembered facts that mention some words.', 'parameters': OBJ({'about': S('words to match')}, ['about'])},
     {'name': 'set_volume', 'description': 'Speaker volume, 0-100.', 'parameters': OBJ({'percent': N('0-100')}, ['percent'])},
+    {'name': 'dance', 'description': 'Dance mode on or off: Kevin follows the beat of the music in the room and dances on the '
+     'dance screen (http://<pi>.local:8080/dance, e.g. on a TV), plus anything the owner has hooked up to the beat.',
+     'parameters': OBJ({'on': {'type': 'BOOLEAN', 'description': 'on or off'}}, ['on'])},
     {'name': 'pi_status', 'description': 'The Raspberry Pi itself: temperature, uptime, disk space, memory, IP address, version.',
      'parameters': OBJ()},
     {'name': 'gpio_guide', 'description': 'Which GPIO pins are free to wire things to and how (BCM numbers), to help the user wire hardware for a new skill.',
@@ -286,6 +289,14 @@ class Tools(knowledge.KnowledgeTools):
         keep = [x for x in n if str(about).lower() not in x['fact'].lower()]
         _save_notes(keep)
         return {'forgot': len(n) - len(keep)}
+
+    def t_dance(self, on=True):
+        from . import dance
+        go = bool(on) and str(on).lower() not in ('false', '0', 'off', 'no')
+        dance.set_enabled(go)
+        return {'ok': True, 'dancing': go,
+                'say': ('Dance mode on. Put some music on; the dance screen is at port 8080, slash dance.' if go
+                        else 'Dance mode off.')}
 
     def t_set_volume(self, percent):
         pct = audio.set_volume(percent)
