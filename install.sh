@@ -51,6 +51,11 @@ $APT update
 $APT install -y git python3-venv python3-pip alsa-utils unzip curl avahi-daemon mpv \
   python3-gpiozero python3-lgpio python3-serial python3-smbus2 i2c-tools stockfish >/dev/null
 systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
+# Bluetooth speakers (settings page, Bluetooth): BlueZ + bluez-alsa, so a speaker is an ALSA device like any other.
+# Best effort: an image without them still installs, and the page says Bluetooth is not available.
+$APT install -y bluez bluez-alsa-utils >/dev/null 2>&1 || echo "Bluetooth packages not available: Bluetooth stays off."
+systemctl enable --now bluetooth >/dev/null 2>&1 || true
+systemctl enable --now bluealsa >/dev/null 2>&1 || true
 if command -v raspi-config >/dev/null; then                 # I2C and SPI on, for sensors (applies after a reboot)
   raspi-config nonint do_i2c 0 || true
   raspi-config nonint do_spi 0 || true
@@ -64,6 +69,16 @@ getent group audio >/dev/null && usermod -aG audio "$USER_NAME"
 getent group dialout >/dev/null && usermod -aG dialout "$USER_NAME"     # the bedside screen (a USB Nano)
 for g in gpio i2c spi dialout video; do getent group "$g" >/dev/null && usermod -aG "$g" "$SKILL_USER"; done
 usermod -aG "$SKILL_USER" "$USER_NAME"                       # Kevin may talk to the skill host's socket
+getent group bluetooth >/dev/null && usermod -aG bluetooth "$USER_NAME"   # pair speakers from the settings page
+getent group netdev >/dev/null && usermod -aG netdev "$USER_NAME"
+# ...and Wi-Fi: NetworkManager asks polkit, which says yes to Kevin's user for network changes and nothing else
+if [ -d /etc/polkit-1/rules.d ]; then
+  cat > /etc/polkit-1/rules.d/50-kevin-network.rules <<RULES
+polkit.addRule(function(action, subject) {
+  if (subject.user == "$USER_NAME" && action.id.indexOf("org.freedesktop.NetworkManager.") == 0) return polkit.Result.YES;
+});
+RULES
+fi
 
 # The project was renamed from Bob to Kevin (10 Oct 2026; IBM's assistant is called Bob). GitHub redirects the old
 # address, but point existing copies at the new one too.

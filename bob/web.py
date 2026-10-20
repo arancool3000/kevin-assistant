@@ -13,7 +13,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import actions, audio, bedside, config, experts, helper, skills, tools, updater, wake
+from . import actions, audio, bedside, config, experts, helper, skills, system, tools, updater, wake
 from .webapp import APP, STANDBY
 
 SESSIONS = {}
@@ -40,6 +40,16 @@ button.plain{background:rgba(255,255,255,.1)}button.bad{background:rgba(255,69,5
 pre{white-space:pre-wrap;background:rgba(0,0,0,.35);padding:12px;border-radius:12px;font-size:12.5px;overflow:auto;max-height:50vh}
 .face{width:64px;height:64px;border-radius:22%;background:var(--brand);display:inline-grid;grid-auto-flow:column;gap:12px;place-content:center;vertical-align:middle;margin-right:12px}
 .face i{width:8px;height:18px;border-radius:9px;background:#fff;display:block}
+nav.tabs{position:sticky;top:0;z-index:5;display:flex;gap:6px;overflow-x:auto;padding:10px 0;margin:0 -16px;padding-left:16px;padding-right:16px;
+ background:linear-gradient(var(--bg) 70%,transparent);scrollbar-width:none}nav.tabs::-webkit-scrollbar{display:none}
+nav.tabs a{flex:none;color:var(--txt);text-decoration:none;font-size:14px;font-weight:600;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.08)}
+.card h2.big{font-size:20px;color:var(--txt);margin:0 0 4px}.card{scroll-margin-top:64px}
+.dev{display:flex;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}.dev:first-child{border-top:0}
+.dev .nm{flex:1;min-width:0}.dev .nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dev button{padding:8px 12px;font-size:14px}.bars{font-size:12px;color:var(--dim)}
+.toggle{display:flex;align-items:center;gap:10px;margin:12px 0 4px;font-size:15px;color:var(--txt)}.toggle input{width:auto}
+.savebar{position:sticky;bottom:0;padding:12px 0;background:linear-gradient(transparent,var(--bg) 40%)}.savebar button{width:100%}
+.note{font-size:14px;color:var(--dim);min-height:1.2em;margin:8px 0 0}
 """
 
 
@@ -259,6 +269,12 @@ class Handler(BaseHTTPRequestHandler):
                 esc(src or 'not found'), skills.KEEP_VERSIONS, vhtml)))
         if path == '/api/live':
             return self._send(200, json.dumps(actions.live()), 'application/json')
+        if path == '/settings':
+            return self._send(200, self.settings())
+        if path == '/api/bt':
+            return self._send(200, json.dumps(system.bt_devices()), 'application/json')
+        if path == '/api/wifi':
+            return self._send(200, json.dumps(system.wifi_status('rescan' in self.path)), 'application/json')
         if path == '/app':
             return self._send(200, APP)
         if path == '/standby':
@@ -319,6 +335,24 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 r = {'ok': False, 'error': 'unknown action'}
             return self._send(200, json.dumps(r), 'application/json')
+        if path in ('/api/bt', '/api/wifi', '/api/sound-test'):   # the settings page's Bluetooth, Wi-Fi and Sound cards
+            try:
+                act = f.get('act', '')
+                if path == '/api/bt':
+                    {'scan': lambda: system.bt_scan(), 'connect': lambda: system.bt_connect(f.get('address')),
+                     'disconnect': lambda: system.bt_disconnect(f.get('address')),
+                     'forget': lambda: system.bt_forget(f.get('address'))}[act]()
+                    out = {'ok': True}
+                elif path == '/api/wifi':
+                    {'join': lambda: system.wifi_join(f.get('ssid'), f.get('password', '')),
+                     'forget': lambda: system.wifi_forget(f.get('ssid'))}[act]()
+                    out = {'ok': True}
+                else:
+                    ok, why = system.test_tone(f.get('device'))
+                    out = {'ok': ok, 'error': '' if ok else (why or 'no sound device')}
+            except (KeyError, ValueError) as e:
+                out = {'ok': False, 'error': str(e) if isinstance(e, ValueError) else 'unknown action'}
+            return self._send(200, json.dumps(out), 'application/json')
         if path == '/settings':
             cfg = config.load()
             for k in ('name', 'personality', 'language'):
@@ -360,7 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                 sec['gemini_api_key'] = f['api_key'].strip()
                 config.save_secrets(sec)
             subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'restart', 'bob-assistant'], capture_output=True)
-            return self._redirect('/?saved=1')
+            return self._redirect('/settings?saved=1')
         if path == '/ai-connect':                      # your own Claude / ChatGPT account (docs/AI-ACCOUNTS.md)
             try:
                 if f.get('claude_token', '').strip():
@@ -442,7 +476,6 @@ class Handler(BaseHTTPRequestHandler):
         sk, bad = skills.load_all()
         state_txt = {'asleep': 'Listening for "%s"' % (active_phrase or cfg['wake_phrase']), 'listening': 'In a conversation',
                      'speaking': 'Speaking', 'working': 'Using a tool', 'needs_setup': 'Needs your Gemini key'}.get(st, st)
-        voice_opts = ''.join('<option%s>%s</option>' % (' selected' if v == cfg['voice'] else '', v) for v in VOICES)
         def _row(n, desc, on):
             return ('<div class="row"><span><b>%s</b>%s<br><span class="sub">%s</span></span><span><a class="btn plain" href="/skill?name=%s">Code &amp; versions</a> '
                     '<form method="post" action="/skill-toggle" style="display:inline"><input type="hidden" name="name" value="%s">'
@@ -456,54 +489,138 @@ class Handler(BaseHTTPRequestHandler):
         skills_html = skills_html or '<p class="sub">None yet. Wire something to the Pi and say: "Hey Kevin, make a skill for it." A good first one: "Hey Kevin, install the example temperature skill."</p>'
         if bad:
             skills_html += ''.join('<p class="warn">%s is broken: %s</p>' % (esc(b['name']), esc(b['problem'])) for b in bad)
-        return page('Kevin', ((
+        nokey = '' if sec.get('gemini_api_key') else (
+            '<div class="card"><h2 class="big warn">Kevin needs a Gemini key</h2><p class="sub">Until it is added he cannot answer. '
+            'Get a free one at aistudio.google.com/apikey and paste it under Settings, Accounts.</p>'
+            '<a class="btn" href="/settings#accounts">Add the key</a></div>')
+        return page('Kevin', (
             '<h1><span class="face"><i></i><i></i></span>%s</h1><p class="sub">%s · version %s</p>'
-            '<p><a class="btn" href="/app">Remote</a> <a class="btn plain" href="/standby">StandBy clock</a></p>'
-            '%s'
+            '<p><a class="btn" href="/settings">Settings</a> <a class="btn plain" href="/app">Remote</a> <a class="btn plain" href="/standby">StandBy clock</a></p>'
+            '%s%s'
             '<div class="card"><h2>Status</h2>'
             '<div class="row"><span>Kevin</span><span class="pill %s">%s</span></div>'
             '<div class="row"><span>Gemini key</span><span class="pill %s">%s</span></div>'
             '<div class="row"><span>Pi</span><span class="sub">%s°C · %s GB free · %s</span></div></div>'
-            '<form method="post" action="/settings" class="card"><h2>Settings</h2>'
-            '<label>Name</label><input name="name" value="%s">'
-            '<label>Wake phrase</label><input name="wake_phrase" value="%s">'
-            '<label>Wake sensitivity (higher wakes more easily) · %s%%</label><input type="range" name="wake_sensitivity" min="20" max="90" value="%s">'
-            '<label>Voice</label><select name="voice">%s</select>'
-            '<label>Personality</label><input name="personality" value="%s">'
-            '<label>Town (for the weather)</label><input name="town" value="%s">'
-            '<label>Volume</label><input type="range" name="volume" min="0" max="100" value="%s">'
-            '<label>Seconds Kevin waits for you before going back to sleep</label><input type="number" name="idle_seconds" min="5" max="60" value="%s">'
-            '<label>Language (e.g. en-GB, en-US)</label><input name="language" value="%s">'
-            '<label>Microphone device (from arecord -L; "default" is the USB device the installer chose)</label><input name="mic_device" value="%s">'
-            '<label>Speaker device (from aplay -L)</label><input name="speaker_device" value="%s">'
-            '<label><input type="checkbox" name="quiet_enabled" style="width:auto" %s> Quiet hours (softer chimes, dim bedside screen; alarms still ring)</label>'
-            '<label>Quiet from (hour, 0-23)</label><input type="number" name="quiet_from" min="0" max="23" value="%s">'
-            '<label>Quiet until (hour, 0-23)</label><input type="number" name="quiet_to" min="0" max="23" value="%s">'
-            '<label>Music volume</label><input type="range" name="music_volume" min="0" max="100" value="%s">'
-            '<label>Bedside screen: USB serial number (see examples/bedside-screen; empty = none). Plugged in now: %s</label><input name="bedside_serial" value="%s">'
-            '<label>New Gemini API key (leave empty to keep the current one)</label><input name="api_key" autocomplete="off">'
-            '<label><input type="checkbox" name="auto_update" style="width:auto" %s> Install updates automatically</label>'
-            '<label>Approving new skills</label><select name="skill_approval"><option value="voice"%s>A spoken yes, or Approve on this page</option>'
-            '<option value="page"%s>Only Approve on this page (after reading the code)</option></select>'
-            '<p><button>Save</button></p></form>'
-            '%s'
             '<div class="card"><h2>Skills Kevin has made</h2>%s</div>'
-            '%s'
             '<div class="card"><h2>Updates</h2><form method="post" action="/update" style="display:inline"><button class="plain">Check now</button></form> '
-            '<a class="btn plain" href="/log">Update log</a></div>'
-            '@@PW@@') % (
-                esc(cfg['name']), esc(pi_st.get('ip') or ''), esc(pi_st.get('version', '?')), pending_cards(),
+            '<a class="btn plain" href="/log">Update log</a></div>') % (
+                esc(cfg['name']), esc(pi_st.get('ip') or ''), esc(pi_st.get('version', '?')), nokey, pending_cards(),
                 'ok' if st in ('asleep', 'listening', 'speaking', 'working') else 'warn', esc(state_txt),
                 'ok' if sec.get('gemini_api_key') else 'warn', 'set' if sec.get('gemini_api_key') else 'missing',
                 esc(pi_st.get('cpu_temp_c', '?')), esc(pi_st.get('disk_free_gb', '?')), esc(service_active('bob-assistant')),
-                esc(cfg['name']), esc(cfg['wake_phrase']), esc(cfg['wake_sensitivity']), esc(cfg['wake_sensitivity']), voice_opts,
-                esc(cfg['personality']), esc(cfg['town']), esc(cfg['volume']), esc(cfg['idle_seconds']), esc(cfg['language']),
-                esc(cfg['mic_device']), esc(cfg['speaker_device']),
-                'checked' if cfg.get('quiet_enabled', True) else '', esc(cfg.get('quiet_from', 22)), esc(cfg.get('quiet_to', 7)),
-                esc(cfg.get('music_volume', 60)), esc(', '.join(bedside.devices()) or 'no USB serial devices'), esc(cfg.get('bedside_serial', '')),
-                'checked' if cfg.get('auto_update') else '',
-                '' if cfg.get('skill_approval') == 'page' else ' selected', ' selected' if cfg.get('skill_approval') == 'page' else '',
-                ai_card(), skills_html, helper_card())).replace('@@PW@@', password_card(sec)))
+                skills_html))
+
+    def settings(self):
+        cfg, sec = config.load(), config.load_secrets()
+        saved = 'saved=1' in self.path
+        voice_opts = ''.join('<option%s>%s</option>' % (' selected' if v == cfg['voice'] else '', v) for v in VOICES)
+        try:
+            snd = system.sound_devices()
+        except Exception:
+            snd = {'speakers': [], 'mics': []}
+
+        def opts(rows, cur):
+            names = [r['name'] for r in rows]
+            if cur and cur not in names:
+                rows = rows + [{'name': cur, 'label': '%s (not plugged in now)' % cur}]
+            rows = rows or [{'name': 'default', 'label': 'default'}]
+            return ''.join('<option value="%s"%s>%s</option>' % (esc(r['name']), ' selected' if r['name'] == cur else '',
+                                                                   esc(r['label'] if r['label'] != r['name'] else r['name'])) for r in rows)
+        sect = lambda id_, title, sub, body: ('<div class="card" id="%s"><h2 class="big">%s</h2><p class="sub">%s</p>%s</div>'
+                                               % (id_, title, sub, body))
+        chk = lambda name, on, text: '<label class="toggle"><input type="checkbox" name="%s"%s> %s</label>' % (name, ' checked' if on else '', text)
+        form = (
+            '<form method="post" action="/settings" id="cfg">'
+            + sect('kevin', 'Kevin', 'How he sounds and when he listens.',
+                   '<label>Name</label><input name="name" value="%s">' % esc(cfg['name'])
+                   + '<label>Wake phrase</label><input name="wake_phrase" value="%s">' % esc(cfg['wake_phrase'])
+                   + '<label>Wake sensitivity: <b id="ws">%s</b> (higher wakes more easily, and more by mistake)</label>'
+                     '<input type="range" name="wake_sensitivity" min="20" max="90" value="%s" oninput="ws.textContent=this.value">' % (
+                       esc(cfg['wake_sensitivity']), esc(cfg['wake_sensitivity']))
+                   + '<label>Voice</label><select name="voice">%s</select>' % voice_opts
+                   + '<label>Personality</label><input name="personality" value="%s">' % esc(cfg['personality'])
+                   + '<label>Language (e.g. en-GB, en-US)</label><input name="language" value="%s">' % esc(cfg['language'])
+                   + '<label>Seconds he waits for you before going back to sleep</label>'
+                     '<input type="number" name="idle_seconds" min="5" max="60" value="%s">' % esc(cfg['idle_seconds'])
+                   + '<label>Town (for the weather)</label><input name="town" value="%s">' % esc(cfg['town']))
+            + sect('sound', 'Sound', 'Which speaker and microphone Kevin uses. A Bluetooth speaker appears here once it is connected (below).',
+                   '<label>Speaker</label><select name="speaker_device" id="spk">%s</select>' % opts(snd['speakers'], cfg['speaker_device'])
+                   + '<p><button type="button" class="plain" onclick="testSpk()">Play a test sound</button></p><p class="note" id="spk-note"></p>'
+                   + '<label>Microphone</label><select name="mic_device">%s</select>' % opts(snd['mics'], cfg['mic_device'])
+                   + '<label>Kevin\'s volume</label><input type="range" name="volume" min="0" max="100" value="%s">' % esc(cfg['volume'])
+                   + '<label>Music volume</label><input type="range" name="music_volume" min="0" max="100" value="%s">' % esc(cfg.get('music_volume', 60)))
+            + '@@BT@@@@WIFI@@'
+            + sect('quiet', 'Quiet hours', 'Softer chimes and a dim bedside screen. Alarms still ring.',
+                   chk('quiet_enabled', cfg.get('quiet_enabled', True), 'Quiet hours on')
+                   + '<label>From (hour, 0-23)</label><input type="number" name="quiet_from" min="0" max="23" value="%s">' % esc(cfg.get('quiet_from', 22))
+                   + '<label>Until (hour, 0-23)</label><input type="number" name="quiet_to" min="0" max="23" value="%s">' % esc(cfg.get('quiet_to', 7)))
+            + sect('accounts', 'Accounts', 'Kevin\'s Gemini key is %s.' % ('<span class="ok">set</span>' if sec.get('gemini_api_key') else '<span class="warn">missing: he cannot answer until you add it</span>'),
+                   '<label>New Gemini API key (free from aistudio.google.com/apikey; leave empty to keep the current one)</label>'
+                   '<input name="api_key" autocomplete="off">')
+            + sect('devices', 'Bedside screen', 'Optional: see examples/bedside-screen.',
+                   '<label>USB serial number (empty = none). Plugged in now: %s</label><input name="bedside_serial" value="%s">' % (
+                       esc(', '.join(bedside.devices()) or 'no USB serial devices'), esc(cfg.get('bedside_serial', ''))))
+            + sect('safety', 'Skills and updates', 'What Kevin may change by himself.',
+                   '<label>Approving new skills</label><select name="skill_approval"><option value="voice"%s>A spoken yes, or Approve on the home page</option>'
+                   '<option value="page"%s>Only Approve on the home page (after reading the code)</option></select>' % (
+                       '' if cfg.get('skill_approval') == 'page' else ' selected', ' selected' if cfg.get('skill_approval') == 'page' else '')
+                   + chk('auto_update', cfg.get('auto_update'), 'Install updates automatically'))
+            + '<div class="savebar"><button>Save settings</button></div></form>')
+        bt = sect('bluetooth', 'Bluetooth', 'Pair a speaker or headphones. Put the device in pairing mode first.',
+                  '<div id="bt-list"><p class="sub">Loading…</p></div><p><button type="button" id="bt-scan" onclick="btScan()">Find devices</button></p>'
+                  '<p class="note" id="bt-note"></p>')
+        wifi = sect('wifi', 'Wi-Fi', 'Kevin needs a 2.4 or 5 GHz home network with a normal password (not a hotel or school login page).',
+                    '<div id="wifi-list"><p class="sub">Loading…</p></div><p><button type="button" class="plain" onclick="wifiLoad(1)">Scan again</button></p>'
+                    '<p class="note" id="wifi-note"></p>')
+        body = (('<p><a class="btn plain" href="/">‹ Kevin</a></p><h1>Settings</h1>%s'
+                 '<nav class="tabs"><a href="#kevin">Kevin</a><a href="#sound">Sound</a><a href="#bluetooth">Bluetooth</a><a href="#wifi">Wi-Fi</a>'
+                 '<a href="#quiet">Quiet hours</a><a href="#accounts">Accounts</a><a href="#devices">Devices</a><a href="#safety">Skills</a>'
+                 '<a href="#password">Password</a><a href="#extras">Extras</a></nav>') % (
+                     '<p class="pill ok">Saved. Kevin is restarting.</p>' if saved else '')
+                + form.replace('@@BT@@', bt).replace('@@WIFI@@', wifi)   # no named inputs in these two: the one form still saves everything
+                + '<div id="password">' + password_card(sec) + '</div><div id="extras">' + ai_card() + helper_card() + '</div>'
+                + '<script>' + SETTINGS_JS + '</script>')
+        return page('Kevin settings', body)
+
+
+SETTINGS_JS = r"""
+const $=id=>document.getElementById(id),E=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function post(u,d){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(d)});return r.json()}
+async function testSpk(){$('spk-note').textContent='Playing…';const r=await post('/api/sound-test',{device:$('spk').value});
+  $('spk-note').textContent=r.ok?'Did you hear a beep? If not, pick another speaker.':'No sound: '+r.error}
+let btT=0;
+async function btLoad(){let d;try{d=await (await fetch('/api/bt')).json()}catch(e){$('bt-list').innerHTML='<p class="warn">Could not ask the Pi.</p>';return}
+  if(!d.available){$('bt-list').innerHTML='<p class="warn">No Bluetooth on this Pi (or it is switched off).</p>';$('bt-scan').hidden=true;return}
+  $('bt-list').innerHTML=d.devices.length?d.devices.map(x=>'<div class="dev"><div class="nm"><b>'+E(x.name)+'</b><span class="bars">'
+    +(x.connected?'<span class="ok">connected</span>':x.paired?'paired':'found')+' · '+E(x.kind)+'</span></div>'
+    +(x.connected?'<button type="button" class="plain" onclick="bt(\'disconnect\',\''+x.address+'\')">Disconnect</button>'
+      :'<button type="button" onclick="bt(\'connect\',\''+x.address+'\')">Connect</button>')
+    +(x.paired?'<button type="button" class="bad" onclick="if(confirm(\'Forget '+E(x.name).replace(/'/g,'')+'?\'))bt(\'forget\',\''+x.address+'\')">Forget</button>':'')
+    +'</div>').join(''):'<p class="sub">Nothing yet. Press Find devices.</p>';
+  $('bt-scan').disabled=d.scanning;$('bt-scan').textContent=d.scanning?'Looking…':'Find devices';
+  $('bt-note').textContent=d.busy?d.busy[0].toUpperCase()+d.busy.slice(1)+'…':(d.last||'');
+  clearTimeout(btT);btT=setTimeout(btLoad,d.scanning||d.busy?1500:8000)}
+async function btScan(){await post('/api/bt',{act:'scan'});btLoad()}
+async function bt(act,a){const r=await post('/api/bt',{act:act,address:a});if(!r.ok)$('bt-note').textContent=r.error;btLoad()}
+let wfT=0;
+async function wifiLoad(rescan){if(rescan)$('wifi-note').textContent='Scanning…';let d;
+  try{d=await (await fetch('/api/wifi'+(rescan?'?rescan=1':''))).json()}catch(e){$('wifi-list').innerHTML='<p class="warn">Could not ask the Pi.</p>';return}
+  if(!d.available){$('wifi-list').innerHTML='<p class="warn">'+E(d.last)+'</p>';return}
+  $('wifi-list').innerHTML=d.networks.map(n=>'<div class="dev"><div class="nm"><b>'+E(n.ssid)+'</b><span class="bars">'
+    +(n.in_use?'<span class="ok">connected</span> · ':'')+n.signal+'% signal'+(n.secure?' · password':' · open')
+    +(d.saved.includes(n.ssid)&&!n.in_use?' · saved':'')+'</span></div>'
+    +(n.in_use?'':'<button type="button" onclick="wifiJoin(\''+encodeURIComponent(n.ssid)+'\','+n.secure+')">Join</button>')
+    +(d.saved.includes(n.ssid)&&!n.in_use?'<button type="button" class="bad" onclick="wifi(\'forget\',\''+encodeURIComponent(n.ssid)+'\')">Forget</button>':'')
+    +'</div>').join('')||'<p class="sub">No networks found.</p>';
+  $('wifi-note').textContent=d.busy?d.busy[0].toUpperCase()+d.busy.slice(1)+'…':(d.last||'');
+  clearTimeout(wfT);if(d.busy)wfT=setTimeout(wifiLoad,2000)}
+async function wifiJoin(s,secure){s=decodeURIComponent(s);let pw='';
+  if(secure){pw=prompt('Password for '+s+' (capitals matter)');if(pw===null)return}
+  const r=await post('/api/wifi',{act:'join',ssid:s,password:pw});$('wifi-note').textContent=r.ok?'Joining '+s+'…':r.error;setTimeout(wifiLoad,1500)}
+async function wifi(act,s){s=decodeURIComponent(s);if(act==='forget'&&!confirm('Forget '+s+'?'))return;
+  const r=await post('/api/wifi',{act:act,ssid:s});$('wifi-note').textContent=r.ok?'':r.error;wifiLoad()}
+btLoad();wifiLoad(0);
+"""
 
 
 def ai_card():
