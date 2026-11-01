@@ -85,6 +85,11 @@ Open `http://<your-pi-name>.local:8080` (or `http://<its IP>:8080`) and paste yo
 - "What's the weather tomorrow?" · "Will it rain in the next hour?" · "Remember the spare key is in the blue box"
 - "Set a pasta timer for 10 minutes" · "Wake me up at 7:30" · "Add 2 minutes" · "Snooze" · "Stop"
 - "Play Radio Paradise" · "Play some music" · "Next song" · "Quieter" · "What's playing?"
+- "Play Bohemian Rhapsody on YouTube" · "Like this song" · "Play my liked songs" · "Shuffle my music"
+- "What's on BBC One tonight?" · "Let's play chess" · "Knight g1 to f3" · "Give me a hint" · "Take that back"
+- "Is everything working?" (services, temperature, disk; the health timer restarts a failed Kevin service by itself)
+- Optional, off until you set them up: a [chess board camera](docs/CHESS.md) that reads your moves on a real board,
+  and [read-only Gmail](docs/GMAIL.md) with your own Google credentials ("Any new emails?").
 - "What's 15% of 240?" · "How many cups in a litre?" · "Define serendipity" · "How many days until Christmas?"
 - "What's in the news?" (Kevin can search the web) · "How hot is the Pi running?"
 - "I've wired a button to GPIO 27 — make a skill that tells me if it's pressed." · "Make a skill that switches the relay on GPIO 22."
@@ -112,6 +117,7 @@ Details: [docs/UPDATES.md](docs/UPDATES.md).
   Kevin's settings or API key. Installing one needs your yes, enforced in code; read or delete any of them on the
   settings page.
 - The settings page is for your home network only. Do not forward port 8080 to the internet.
+- The chess camera and Gmail are off until you switch them on; the camera keeps no pictures and Gmail is read-only.
 
 More: [docs/PRIVACY-SECURITY.md](docs/PRIVACY-SECURITY.md).
 

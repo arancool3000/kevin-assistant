@@ -1,2 +1,4 @@
 websockets>=12,<16
 vosk>=0.3.45
+chess>=1.10,<2
+yt-dlp

@@ -1,0 +1,8 @@
+[Unit]
+Description=Kevin health check (restarts a failed Kevin service, notes new crashes)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/bob-assistant
+ExecStart=/opt/bob-assistant/venv/bin/python -m bob.health --heal
+TimeoutStartSec=300
