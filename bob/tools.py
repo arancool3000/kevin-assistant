@@ -12,7 +12,8 @@ import time
 import urllib.parse
 import urllib.request
 
-from . import audio, config, experts, knowledge, music, skills, timers
+from . import (audio, chesscam, chessgame, config, experts, gmail, health, knowledge, music, skills, timers, tvguide,
+               youtube)
 
 NOTES = os.path.join(config.STATE, 'notes.json')
 WEATHER_CODES = {0: 'clear', 1: 'mostly clear', 2: 'partly cloudy', 3: 'overcast', 45: 'fog', 48: 'fog',
@@ -62,7 +63,8 @@ DECLARATIONS = [
     {'name': 'gpio_guide', 'description': 'Which GPIO pins are free to wire things to and how (BCM numbers), to help the user wire hardware for a new skill.',
      'parameters': OBJ()},
     {'name': 'end_conversation', 'description': 'Go back to sleep (the user said bye, thanks, that is all).', 'parameters': OBJ()},
-] + knowledge.DECLARATIONS + skills.DECLARATIONS
+] + (knowledge.DECLARATIONS + youtube.DECLARATIONS + tvguide.DECLARATIONS + chessgame.DECLARATIONS + health.DECLARATIONS
+     + skills.DECLARATIONS)
 
 
 def _notes():
@@ -161,16 +163,27 @@ GPIO_GUIDE = {
 }
 
 
-class Tools(knowledge.KnowledgeTools):
+def optional_declarations(cfg):
+    """Tools that are off until the owner switches them on: the chess camera and Gmail."""
+    out = []
+    if chesscam.enabled(cfg):
+        out += chesscam.DECLARATIONS
+    if gmail.enabled(cfg):
+        out += gmail.DECLARATIONS
+    return out
+
+
+class Tools(knowledge.KnowledgeTools, youtube.YouTubeTools, tvguide.TVGuideTools, chessgame.ChessTools,
+            chesscam.ChessCamTools, gmail.GmailTools, health.HealthTools):
     def __init__(self, cfg, ring=None):      # ring: kept for old callers; timers.Ringer rings now
         self.cfg = cfg
         self.ended = False
 
     def declarations(self):
-        return DECLARATIONS + skills.declarations()
+        return DECLARATIONS + optional_declarations(self.cfg) + skills.declarations()
 
     def builtin_declarations(self):
-        return list(DECLARATIONS)
+        return list(DECLARATIONS) + optional_declarations(self.cfg)
 
     def call(self, name, args):
         a = args or {}

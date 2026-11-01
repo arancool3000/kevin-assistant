@@ -43,7 +43,13 @@ DEFAULTS = {
     'quiet_from': 22,                    # quiet hours: softer chimes, a dim bedside screen (alarms still ring)
     'quiet_to': 7,
     'quiet_enabled': True,
-    'bedside_serial': '',                # USB serial number of a NanoTool-style bedside screen; empty = find it by itself
+    'bedside_serial': '',
+    'tv_bbc_one': 'bbc_one_london',      # TV guide: your BBC One / Two region, e.g. bbc_one_scotland, bbc_two_wales
+    'tv_bbc_two': 'bbc_two_england',
+    'chess_camera': '',                  # chess board camera, e.g. /dev/video0 or 0; empty = off (docs/CHESS.md)
+    'gmail_enabled': False,              # read-only Gmail with your own Google OAuth client (docs/GMAIL.md)
+    'self_heal': True,                   # the health timer restarts a failed Kevin service (at most once per 30 minutes)
+    'health_units': ['bob-assistant', 'bob-assistant-web', 'bob-assistant-skills'],                # USB serial number of a NanoTool-style bedside screen; empty = find it by itself
 }
 
 

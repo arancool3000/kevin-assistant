@@ -205,6 +205,7 @@ if [ "$UPGRADE" -eq 0 ]; then
   systemctl restart bob-assistant-skills.service bob-assistant-web.service bob-assistant.service
   systemctl start bob-assistant-update.timer
 fi
+systemctl enable --now bob-assistant-health.timer >/dev/null 2>&1 || true     # health check + self-heal for Kevin's services
 # "Help run KindleHub" is never switched on here unless the owner ticked it in Kevin Setup; it is off by default
 # and an upgrade leaves it exactly as it was.
 if [ -f "$STATE/.helper-on" ]; then
